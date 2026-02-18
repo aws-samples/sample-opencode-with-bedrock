@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/aws-samples/sample-opencode-with-bedrock/auth/opencode-auth/apikey"
@@ -573,6 +574,23 @@ func runOpenCode(args []string) error {
 		fmt.Fprintf(os.Stderr, "Proxy started\n")
 		// Give the proxy a moment to initialize its refresher
 		time.Sleep(500 * time.Millisecond)
+	} else {
+		// Verify proxy config matches current config (catches stale proxy after update)
+		if proxyConfig, err := proxy.LoadProxyConfig(cfg); err == nil {
+			expectedTarget := strings.TrimSuffix(cfg.APIEndpoint, "/v1")
+			if proxyConfig.TargetURL != expectedTarget {
+				fmt.Fprintf(os.Stderr, "Proxy target changed (%s → %s), restarting...\n",
+					proxyConfig.TargetURL, expectedTarget)
+				proxy.StopProxy(cfg)
+				time.Sleep(500 * time.Millisecond)
+				newConfig, err := proxy.StartProxy(cfg)
+				if err != nil {
+					return fmt.Errorf("failed to restart proxy: %w", err)
+				}
+				proxyURL = fmt.Sprintf("http://localhost:%d", newConfig.Port)
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
 	}
 
 	// Ask proxy to ensure we have a valid token

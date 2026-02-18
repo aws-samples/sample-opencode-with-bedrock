@@ -84,6 +84,12 @@ fi
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$CONFIG_DIR"
 
+# Stop any running proxy before installing new binary
+if command -v opencode-auth >/dev/null 2>&1; then
+    echo "Stopping existing proxy..."
+    opencode-auth proxy stop 2>/dev/null || true
+fi
+
 # Install binary
 echo "Installing binary..."
 cp "$SCRIPT_DIR/$BINARY_NAME" "$INSTALL_DIR/opencode-auth"

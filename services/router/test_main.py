@@ -1,0 +1,111 @@
+"""Tests for bedrock router configuration and helpers."""
+
+import json
+import time
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+class TestBedrockClientConfig:
+    """Verify the Bedrock runtime client is configured correctly."""
+
+    def test_retry_config_max_attempts(self):
+        """get_bedrock_client() should configure max_attempts=3."""
+        # Reset global client so get_bedrock_client() re-creates it
+        import main
+
+        main._bedrock_client = None
+
+        with patch("main.boto3") as mock_boto3:
+            mock_client = MagicMock()
+            mock_boto3.client.return_value = mock_client
+
+            client = main.get_bedrock_client()
+
+            # Verify boto3.client was called
+            mock_boto3.client.assert_called_once()
+            call_kwargs = mock_boto3.client.call_args
+
+            # Extract the BotoConfig from the call
+            config_arg = call_kwargs.kwargs.get("config") or call_kwargs[1].get(
+                "config"
+            )
+            assert config_arg is not None, "BotoConfig not passed to boto3.client"
+
+            # BotoConfig stores retries in _user_provided_options
+            retries = config_arg.retries
+            assert retries is not None, "retries not configured"
+            assert retries.get("max_attempts") == 3, (
+                f"Expected max_attempts=3, got {retries}"
+            )
+
+        # Clean up
+        main._bedrock_client = None
+
+    def test_read_timeout(self):
+        """get_bedrock_client() should configure read_timeout=900."""
+        import main
+
+        main._bedrock_client = None
+
+        with patch("main.boto3") as mock_boto3:
+            mock_boto3.client.return_value = MagicMock()
+            main.get_bedrock_client()
+
+            config_arg = mock_boto3.client.call_args.kwargs.get(
+                "config"
+            ) or mock_boto3.client.call_args[1].get("config")
+            assert config_arg.read_timeout == 900
+
+        main._bedrock_client = None
+
+    def test_connect_timeout(self):
+        """get_bedrock_client() should configure connect_timeout=10."""
+        import main
+
+        main._bedrock_client = None
+
+        with patch("main.boto3") as mock_boto3:
+            mock_boto3.client.return_value = MagicMock()
+            main.get_bedrock_client()
+
+            config_arg = mock_boto3.client.call_args.kwargs.get(
+                "config"
+            ) or mock_boto3.client.call_args[1].get("config")
+            assert config_arg.connect_timeout == 10
+
+        main._bedrock_client = None
+
+
+class TestModelMapping:
+    """Verify model mapping configuration."""
+
+    def test_default_model_map_contains_expected_models(self):
+        import main
+
+        model_map = main.DEFAULT_MODEL_MAP
+        assert "claude-opus" in model_map
+        assert "claude-sonnet" in model_map
+
+    def test_is_anthropic_model(self):
+        import main
+
+        assert main.is_anthropic_model("us.anthropic.claude-opus-4-6-v1") is True
+        assert main.is_anthropic_model("anthropic.claude-v2") is True
+        assert main.is_anthropic_model("moonshotai.kimi-k2.5") is False
+        assert main.is_anthropic_model("meta.llama-3") is False
+
+
+class TestStopReasonMapping:
+    """Verify Converse stopReason -> OpenAI finish_reason mapping."""
+
+    def test_stop_reason_mappings(self):
+        import main
+
+        assert main._map_stop_reason("end_turn") == "stop"
+        assert main._map_stop_reason("stop_sequence") == "stop"
+        assert main._map_stop_reason("tool_use") == "tool_calls"
+        assert main._map_stop_reason("max_tokens") == "length"
+        assert main._map_stop_reason("content_filtered") == "content_filter"
+        assert main._map_stop_reason("unknown_reason") == "stop"  # default

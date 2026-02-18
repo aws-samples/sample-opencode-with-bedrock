@@ -120,7 +120,7 @@ def get_bedrock_client():
             config=BotoConfig(
                 read_timeout=900,
                 connect_timeout=10,
-                retries={"max_attempts": 0},
+                retries={"max_attempts": 3},
             ),
         )
         log.info("Initialized Bedrock runtime client", extra={"region": region})

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -440,4 +441,283 @@ func TestProxyTransportTimeouts(t *testing.T) {
 	}
 
 	t.Log("✓ Transport timeouts configured correctly")
+}
+
+func TestProxyConfigTargetMismatchDetection(t *testing.T) {
+	// This tests the pattern used in runOpenCode() to detect stale proxies
+	// after an install/update changes the API endpoint.
+
+	tests := []struct {
+		name            string
+		savedTargetURL  string
+		currentEndpoint string
+		wantMismatch    bool
+	}{
+		{
+			name:            "matching targets (no /v1 suffix)",
+			savedTargetURL:  "https://api.example.com",
+			currentEndpoint: "https://api.example.com",
+			wantMismatch:    false,
+		},
+		{
+			name:            "matching targets (endpoint has /v1 suffix)",
+			savedTargetURL:  "https://api.example.com",
+			currentEndpoint: "https://api.example.com/v1",
+			wantMismatch:    false,
+		},
+		{
+			name:            "mismatched targets (different host)",
+			savedTargetURL:  "https://old-api.example.com",
+			currentEndpoint: "https://new-api.example.com/v1",
+			wantMismatch:    true,
+		},
+		{
+			name:            "mismatched targets (different scheme)",
+			savedTargetURL:  "http://api.example.com",
+			currentEndpoint: "https://api.example.com/v1",
+			wantMismatch:    true,
+		},
+		{
+			name:            "mismatched targets (different port)",
+			savedTargetURL:  "https://api.example.com:8080",
+			currentEndpoint: "https://api.example.com:9090/v1",
+			wantMismatch:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			cfg := &config.Config{
+				ConfigDir:   tempDir,
+				APIEndpoint: tt.currentEndpoint,
+			}
+
+			// Simulate a proxy that was started with the old target
+			savedConfig := &ProxyConfig{
+				Port:      45273,
+				PID:       os.Getpid(), // use current PID so it looks "alive"
+				Started:   time.Now(),
+				TargetURL: tt.savedTargetURL,
+			}
+			if err := SaveProxyConfig(cfg, savedConfig); err != nil {
+				t.Fatalf("SaveProxyConfig() error = %v", err)
+			}
+
+			// Load and compare — same logic as runOpenCode()
+			proxyConfig, err := LoadProxyConfig(cfg)
+			if err != nil {
+				t.Fatalf("LoadProxyConfig() error = %v", err)
+			}
+
+			expectedTarget := strings.TrimSuffix(cfg.APIEndpoint, "/v1")
+			gotMismatch := proxyConfig.TargetURL != expectedTarget
+
+			if gotMismatch != tt.wantMismatch {
+				t.Errorf("mismatch detection: got %v, want %v (saved=%q expected=%q)",
+					gotMismatch, tt.wantMismatch, proxyConfig.TargetURL, expectedTarget)
+			}
+		})
+	}
+}
+
+func TestAddAuthHeader_ExpiredToken_RefresherSucceeds(t *testing.T) {
+	// When a request hits the proxy with an expired token and the refresher
+	// succeeds, the Authorization header should contain the NEW token.
+	tempDir := t.TempDir()
+	tokenPath := filepath.Join(tempDir, "tokens.json")
+
+	// Save an expired token to disk
+	expiredTokens := &auth.TokenData{
+		IDToken:      "expired-id-token",
+		AccessToken:  "expired-access-token",
+		RefreshToken: "valid-refresh-token",
+		ExpiresAt:    time.Now().Add(-10 * time.Minute), // expired 10 min ago
+		Email:        "test@example.com",
+	}
+	if err := auth.SaveTokens(tokenPath, expiredTokens); err != nil {
+		t.Fatalf("Failed to save expired tokens: %v", err)
+	}
+
+	// Create a mock token endpoint that returns fresh tokens
+	freshIDToken := "fresh-id-token-after-refresh"
+	mockTokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"id_token":      freshIDToken,
+			"access_token":  "fresh-access-token",
+			"refresh_token": "new-refresh-token",
+			"expires_in":    3600,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer mockTokenEndpoint.Close()
+
+	cfg := &config.Config{
+		ConfigDir:     tempDir,
+		TokenPath:     tokenPath,
+		ClientID:      "test-client-id",
+		TokenEndpoint: mockTokenEndpoint.URL,
+	}
+
+	// Create a real refresher backed by the mock endpoint
+	refresher, err := NewRefresher(cfg)
+	if err != nil {
+		t.Fatalf("NewRefresher() error = %v", err)
+	}
+
+	targetURL, _ := url.Parse("https://api.example.com")
+	server := &Server{
+		config:    cfg,
+		targetURL: targetURL,
+		refresher: refresher,
+	}
+
+	req := httptest.NewRequest("POST", "http://localhost:8080/v1/chat/completions", nil)
+	server.addAuthHeader(req)
+
+	// The header should contain the fresh token, not the expired one
+	authHeader := req.Header.Get("Authorization")
+	expectedHeader := "Bearer " + freshIDToken
+	if authHeader != expectedHeader {
+		t.Errorf("addAuthHeader() after refresh: got %q, want %q", authHeader, expectedHeader)
+	}
+
+	t.Log("✓ Expired token was refreshed inline before setting Authorization header")
+}
+
+func TestAddAuthHeader_ExpiredToken_RefresherFails(t *testing.T) {
+	// When the refresher fails, the expired token should still be used
+	// (so the request goes through and fails at the API level, not silently).
+	tempDir := t.TempDir()
+	tokenPath := filepath.Join(tempDir, "tokens.json")
+
+	expiredTokens := &auth.TokenData{
+		IDToken:      "expired-id-token",
+		AccessToken:  "expired-access-token",
+		RefreshToken: "invalid-refresh-token",
+		ExpiresAt:    time.Now().Add(-10 * time.Minute),
+		Email:        "test@example.com",
+	}
+	if err := auth.SaveTokens(tokenPath, expiredTokens); err != nil {
+		t.Fatalf("Failed to save expired tokens: %v", err)
+	}
+
+	// Mock endpoint that returns an error (simulating expired refresh token)
+	mockTokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"invalid_grant","error_description":"refresh token expired"}`))
+	}))
+	defer mockTokenEndpoint.Close()
+
+	cfg := &config.Config{
+		ConfigDir:     tempDir,
+		TokenPath:     tokenPath,
+		ClientID:      "test-client-id",
+		TokenEndpoint: mockTokenEndpoint.URL,
+	}
+
+	refresher, err := NewRefresher(cfg)
+	if err != nil {
+		t.Fatalf("NewRefresher() error = %v", err)
+	}
+
+	targetURL, _ := url.Parse("https://api.example.com")
+	server := &Server{
+		config:    cfg,
+		targetURL: targetURL,
+		refresher: refresher,
+	}
+
+	req := httptest.NewRequest("POST", "http://localhost:8080/v1/chat/completions", nil)
+	server.addAuthHeader(req)
+
+	// The expired token should still be set (graceful degradation)
+	authHeader := req.Header.Get("Authorization")
+	expectedHeader := "Bearer expired-id-token"
+	if authHeader != expectedHeader {
+		t.Errorf("addAuthHeader() after failed refresh: got %q, want %q", authHeader, expectedHeader)
+	}
+
+	t.Log("✓ Expired token used as fallback when refresh fails")
+}
+
+func TestAddAuthHeader_ExpiredToken_NilRefresher(t *testing.T) {
+	// When refresher is nil (e.g., proxy started without refresher),
+	// expired token should be used without panic.
+	tempDir := t.TempDir()
+	tokenPath := filepath.Join(tempDir, "tokens.json")
+
+	expiredTokens := &auth.TokenData{
+		IDToken:     "expired-id-token",
+		AccessToken: "expired-access-token",
+		ExpiresAt:   time.Now().Add(-5 * time.Minute),
+		Email:       "test@example.com",
+	}
+	if err := auth.SaveTokens(tokenPath, expiredTokens); err != nil {
+		t.Fatalf("Failed to save expired tokens: %v", err)
+	}
+
+	cfg := &config.Config{
+		ConfigDir: tempDir,
+		TokenPath: tokenPath,
+	}
+
+	targetURL, _ := url.Parse("https://api.example.com")
+	server := &Server{
+		config:    cfg,
+		targetURL: targetURL,
+		refresher: nil, // explicitly nil
+	}
+
+	req := httptest.NewRequest("POST", "http://localhost:8080/v1/chat/completions", nil)
+
+	// Should not panic
+	server.addAuthHeader(req)
+
+	authHeader := req.Header.Get("Authorization")
+	expectedHeader := "Bearer expired-id-token"
+	if authHeader != expectedHeader {
+		t.Errorf("addAuthHeader() with nil refresher: got %q, want %q", authHeader, expectedHeader)
+	}
+
+	t.Log("✓ No panic with nil refresher and expired token")
+}
+
+func TestAddAuthHeader_ExpiringSoon(t *testing.T) {
+	// Token expiring in <5 minutes should log a warning but still be used.
+	tempDir := t.TempDir()
+	tokenPath := filepath.Join(tempDir, "tokens.json")
+
+	soonTokens := &auth.TokenData{
+		IDToken:     "expiring-soon-token",
+		AccessToken: "access-token",
+		ExpiresAt:   time.Now().Add(3 * time.Minute), // expires in 3 min
+		Email:       "test@example.com",
+	}
+	if err := auth.SaveTokens(tokenPath, soonTokens); err != nil {
+		t.Fatalf("Failed to save tokens: %v", err)
+	}
+
+	cfg := &config.Config{
+		ConfigDir: tempDir,
+		TokenPath: tokenPath,
+	}
+
+	targetURL, _ := url.Parse("https://api.example.com")
+	server := &Server{
+		config:    cfg,
+		targetURL: targetURL,
+	}
+
+	req := httptest.NewRequest("POST", "http://localhost:8080/v1/chat/completions", nil)
+	server.addAuthHeader(req)
+
+	authHeader := req.Header.Get("Authorization")
+	expectedHeader := "Bearer expiring-soon-token"
+	if authHeader != expectedHeader {
+		t.Errorf("addAuthHeader() expiring soon: got %q, want %q", authHeader, expectedHeader)
+	}
+
+	t.Log("✓ Expiring-soon token is used (with warning)")
 }

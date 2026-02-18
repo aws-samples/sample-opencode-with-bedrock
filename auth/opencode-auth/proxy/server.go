@@ -442,7 +442,19 @@ func (s *Server) addAuthHeader(req *http.Request) {
 	// Log token status for debugging
 	timeUntilExpiry := time.Until(tokens.ExpiresAt)
 	if timeUntilExpiry < 0 {
-		fmt.Fprintf(os.Stderr, "[proxy] WARNING: Using EXPIRED token (expired %v ago)\n", -timeUntilExpiry)
+		fmt.Fprintf(os.Stderr, "[proxy] Token expired %v ago, attempting immediate refresh...\n", -timeUntilExpiry)
+		if s.refresher != nil {
+			if err := s.refresher.ForceRefresh(); err != nil {
+				fmt.Fprintf(os.Stderr, "[proxy] Immediate refresh failed: %v\n", err)
+			} else {
+				// Reload tokens after successful refresh
+				if freshTokens, err := auth.LoadTokens(s.config.TokenPath); err == nil {
+					tokens = freshTokens
+					timeUntilExpiry = time.Until(tokens.ExpiresAt)
+					fmt.Fprintf(os.Stderr, "[proxy] Immediate refresh succeeded, token now expires in %v\n", timeUntilExpiry)
+				}
+			}
+		}
 	} else if timeUntilExpiry < 5*time.Minute {
 		fmt.Fprintf(os.Stderr, "[proxy] WARNING: Token expiring soon (%v remaining)\n", timeUntilExpiry)
 	} else if s.config.Debug {

@@ -22,7 +22,7 @@ const (
 	defaultRefreshThreshold = 50 * time.Minute
 
 	// CheckInterval is how often to check token expiration
-	defaultCheckInterval = 5 * time.Minute
+	defaultCheckInterval = 2 * time.Minute
 
 	// MaxRetries is the maximum number of consecutive refresh failures before alerting
 	MaxRetries = 5

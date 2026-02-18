@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -150,6 +151,8 @@ func (cs *CallbackServer) renderSuccess(w http.ResponseWriter) {
 func (cs *CallbackServer) renderError(w http.ResponseWriter, errType, errDesc string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
+	safeErrType := html.EscapeString(errType)
+	safeErrDesc := html.EscapeString(errDesc)
 	fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
@@ -193,7 +196,7 @@ func (cs *CallbackServer) renderError(w http.ResponseWriter, errType, errDesc st
         <div class="details">%s</div>
     </div>
 </body>
-</html>`, errType, errDesc)
+</html>`, safeErrType, safeErrDesc)
 }
 
 // ExchangeCodeForTokens exchanges an authorization code for tokens.

@@ -426,8 +426,8 @@ async def handle_anthropic_non_streaming(body, request_id):
         return web.json_response(
             {
                 "error": {
-                    "message": str(e),
-                    "type": error_name,
+                    "message": "An internal error occurred while processing the request.",
+                    "type": "server_error",
                     "code": "bedrock_error",
                 }
             },
@@ -565,8 +565,8 @@ async def handle_anthropic_streaming(body, request_id, request):
         try:
             error_chunk = {
                 "error": {
-                    "message": str(e),
-                    "type": error_name,
+                    "message": "An internal error occurred while processing the stream.",
+                    "type": "server_error",
                     "code": "bedrock_error",
                 }
             }

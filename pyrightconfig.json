@@ -16,7 +16,7 @@
   "extraPaths": [
     "services/router"
   ],
-  "pythonVersion": "3.11",
+  "pythonVersion": "3.14",
   "typeCheckingMode": "basic",
   "reportMissingImports": "warning",
   "reportMissingTypeStubs": false

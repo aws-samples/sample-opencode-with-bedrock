@@ -1,0 +1,23 @@
+{
+  "include": [
+    "services/router"
+  ],
+  "exclude": [
+    "cdk.out",
+    "node_modules",
+    "**/__pycache__",
+    "**/venv"
+  ],
+  "ignore": [
+    "cdk.out"
+  ],
+  "venvPath": "services/router",
+  "venv": "venv",
+  "extraPaths": [
+    "services/router"
+  ],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": false
+}

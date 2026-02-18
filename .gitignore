@@ -1,0 +1,43 @@
+*.js
+!jest.config.js
+*.d.ts
+node_modules
+.vscode/
+.claude/
+
+# CDK asset staging directory
+.cdk.staging
+cdk.out
+
+# CDK context - contains sensitive config (OIDC provider credentials)
+cdk.context.json
+
+# Local environment files
+.env
+.env.local
+
+# Distribution assets - these are build artifacts
+services/distribution/assets/opencode-auth-*
+services/distribution/assets/opencode-installer.zip
+services/distribution/assets/opencode.json
+services/distribution/assets/opencode-config.json
+
+# Compiled binaries
+auth/opencode-auth/opencode-auth
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# CDK synth baseline log (build artifact)
+cdk-synth-baseline.log
+
+# TypeScript build output
+dist/
+
+
+# Python virtual environments
+venv/
+
+# npm artifacts
+*.tgz

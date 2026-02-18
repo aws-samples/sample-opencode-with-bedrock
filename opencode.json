@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "skill": {
+      "deploy-preflight": "allow",
+      "deploy-guide": "allow",
+      "verify-deployment": "allow",
+      "troubleshoot": "allow",
+      "jwt-debug": "allow"
+    }
+  }
+}

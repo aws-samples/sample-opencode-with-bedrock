@@ -1,0 +1,288 @@
+#!/bin/bash
+# Publish opencode-auth distribution package to S3
+# Usage: ./publish-distribution.sh [--profile PROFILE] [--version VERSION]
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+ASSETS_DIR="$PROJECT_ROOT/services/distribution/assets"
+PROFILE="${AWS_PROFILE:-opencode}"
+REGION="${AWS_REGION:-us-east-1}"
+ENVIRONMENT="${ENVIRONMENT:-dev}"
+VERSION="${VERSION:-dev}"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+print_error() { echo -e "${RED}Error: $1${NC}" >&2; }
+print_success() { echo -e "${GREEN}$1${NC}"; }
+print_warning() { echo -e "${YELLOW}$1${NC}"; }
+print_info() { echo -e "${CYAN}$1${NC}"; }
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Package and upload opencode-auth distribution to S3.
+
+Options:
+    --profile PROFILE    AWS profile to use (default: opencode)
+    --region REGION      AWS region (default: us-east-1)
+    --version VERSION    Version string (default: dev)
+    --help               Show this help message
+
+Examples:
+    $(basename "$0") --profile opencode
+    $(basename "$0") --profile opencode --version 1.0.0
+EOF
+    exit 0
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --profile)
+            PROFILE="$2"
+            shift 2
+            ;;
+        --region)
+            REGION="$2"
+            shift 2
+            ;;
+        --version)
+            VERSION="$2"
+            shift 2
+            ;;
+        --help)
+            usage
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Check dependencies
+check_dependencies() {
+    local missing=()
+
+    if ! command -v zip &> /dev/null; then
+        missing+=("zip")
+    fi
+
+    if ! command -v aws &> /dev/null; then
+        missing+=("aws-cli")
+    fi
+
+    if ! command -v go &> /dev/null; then
+        missing+=("go")
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        print_error "Missing required dependencies: ${missing[*]}"
+        echo "Please install them and try again."
+        exit 1
+    fi
+}
+
+# Build opencode-auth binaries for all platforms
+build_binaries() {
+    print_info "Building opencode-auth binaries..."
+
+    local go_dir="$PROJECT_ROOT/auth/opencode-auth"
+    local ldflags="-s -w -X main.version=${VERSION}"
+
+    local targets=(
+        "darwin:amd64"
+        "darwin:arm64"
+        "linux:amd64"
+        "windows:amd64"
+    )
+
+    for target in "${targets[@]}"; do
+        local os_name="${target%%:*}"
+        local arch="${target##*:}"
+        local output="$ASSETS_DIR/opencode-auth-${os_name}-${arch}"
+        [[ "$os_name" == "windows" ]] && output="${output}.exe"
+
+        echo "  Building ${os_name}/${arch}..."
+        (cd "$go_dir" && GOOS="$os_name" GOARCH="$arch" go build -ldflags "$ldflags" -o "$output" .)
+    done
+
+    # Generate checksums
+    echo "  Generating checksums..."
+    for binary in "$ASSETS_DIR"/opencode-auth-*; do
+        [[ "$binary" == *.sha256 ]] && continue
+        [[ ! -f "$binary" ]] && continue
+        shasum -a 256 "$binary" | awk '{print $1}' > "${binary}.sha256"
+    done
+
+    print_success "Binaries built successfully"
+}
+
+echo ""
+print_info "╔══════════════════════════════════════════════════════════════╗"
+print_info "║          OpenCode Distribution Package Publisher             ║"
+print_info "╚══════════════════════════════════════════════════════════════╝"
+echo ""
+
+check_dependencies
+
+echo "Configuration:"
+echo "  Profile: $PROFILE"
+echo "  Region:  $REGION"
+echo "  Version: $VERSION"
+echo ""
+
+# Step 0: Build binaries from source
+build_binaries
+echo ""
+
+# Get S3 bucket name from CloudFormation
+print_info "Fetching S3 bucket from CloudFormation..."
+BUCKET=$(aws cloudformation describe-stacks \
+    --stack-name "OpenCodeDistribution-${ENVIRONMENT}" \
+    --region "$REGION" \
+    --profile "$PROFILE" \
+    --query 'Stacks[0].Outputs[?OutputKey==`AssetsBucketName`].OutputValue' \
+    --output text 2>/dev/null)
+
+if [[ -z "$BUCKET" ]] || [[ "$BUCKET" == "None" ]]; then
+    print_error "Could not find distribution bucket."
+    echo "Is OpenCodeDistribution-${ENVIRONMENT} deployed?"
+    exit 1
+fi
+echo "  Bucket: $BUCKET"
+
+# Get CLI Client ID from Auth stack
+CLI_CLIENT_ID=$(aws cloudformation describe-stacks \
+    --stack-name "OpenCodeAuth-${ENVIRONMENT}" \
+    --region "$REGION" \
+    --profile "$PROFILE" \
+    --query 'Stacks[0].Outputs[?OutputKey==`CliClientId`].OutputValue' \
+    --output text 2>/dev/null || echo "")
+
+# Get OIDC Issuer from Auth stack
+OIDC_ISSUER=$(aws cloudformation describe-stacks \
+    --stack-name "OpenCodeAuth-${ENVIRONMENT}" \
+    --region "$REGION" \
+    --profile "$PROFILE" \
+    --query 'Stacks[0].Outputs[?OutputKey==`OidcIssuer`].OutputValue' \
+    --output text 2>/dev/null || echo "")
+
+# Get API domain from API stack
+API_DOMAIN=$(aws cloudformation describe-stacks \
+    --stack-name "OpenCodeApi-${ENVIRONMENT}" \
+    --region "$REGION" \
+    --profile "$PROFILE" \
+    --query 'Stacks[0].Outputs[?OutputKey==`ApiDomainName`].OutputValue' \
+    --output text 2>/dev/null || echo "")
+
+if [[ -n "$CLI_CLIENT_ID" ]] && [[ "$CLI_CLIENT_ID" != "None" ]]; then
+    echo "  CLI Client ID: $CLI_CLIENT_ID"
+fi
+if [[ -n "$API_DOMAIN" ]] && [[ "$API_DOMAIN" != "None" ]]; then
+    echo "  API Domain: $API_DOMAIN"
+fi
+if [[ -n "$OIDC_ISSUER" ]] && [[ "$OIDC_ISSUER" != "None" ]]; then
+    echo "  OIDC Issuer: $OIDC_ISSUER"
+fi
+echo ""
+
+# Step 1: Create zip package
+print_info "Step 1: Creating distribution package..."
+
+PACKAGE_DIR=$(mktemp -d)
+ZIP_NAME="opencode-installer.zip"
+ZIP_PATH="$ASSETS_DIR/$ZIP_NAME"
+
+# Copy binaries
+echo "  Copying binaries..."
+for binary in "$ASSETS_DIR"/opencode-auth-*; do
+    # Skip checksum files
+    [[ "$binary" == *.sha256 ]] && continue
+    [[ -f "$binary" ]] && cp "$binary" "$PACKAGE_DIR/"
+done
+
+# Copy install.sh
+echo "  Copying install.sh..."
+cp "$ASSETS_DIR/install.sh" "$PACKAGE_DIR/"
+
+# Copy config files and inject values
+echo "  Copying config files..."
+if [[ -n "$CLI_CLIENT_ID" ]] && [[ "$CLI_CLIENT_ID" != "None" ]] && [[ -n "$API_DOMAIN" ]] && [[ "$API_DOMAIN" != "None" ]]; then
+    echo "  Injecting CLI Client ID, API Domain, and OIDC Issuer"
+    sed -e "s|{{CLIENT_ID}}|$CLI_CLIENT_ID|g" -e "s|{{API_DOMAIN}}|$API_DOMAIN|g" -e "s|{{ISSUER}}|$OIDC_ISSUER|g" "$ASSETS_DIR/opencode-config.json" > "$PACKAGE_DIR/opencode-config.json"
+else
+    print_warning "Could not fetch values from CloudFormation, using template config"
+    cp "$ASSETS_DIR/opencode-config.json" "$PACKAGE_DIR/"
+fi
+
+cp "$ASSETS_DIR/opencode.json" "$PACKAGE_DIR/"
+
+# Create zip
+echo "  Creating zip..."
+rm -f "$ZIP_PATH"
+(cd "$PACKAGE_DIR" && zip -r "$ZIP_PATH" .)
+
+# Cleanup temp dir
+rm -rf "$PACKAGE_DIR"
+
+# Show package contents
+echo ""
+echo "  Package contents:"
+unzip -l "$ZIP_PATH" | tail -n +4 | sed '$d' | sed '$d' | while read -r line; do
+    echo "    $line"
+done
+
+ZIP_SIZE=$(du -h "$ZIP_PATH" | cut -f1)
+echo ""
+echo "  Created: $ZIP_PATH ($ZIP_SIZE)"
+echo ""
+
+# Step 2: Upload to S3
+print_info "Step 2: Uploading to S3..."
+
+# Create downloads prefix if needed
+echo "  Uploading $ZIP_NAME..."
+aws s3 cp "$ZIP_PATH" "s3://$BUCKET/downloads/$ZIP_NAME" \
+    --profile "$PROFILE" \
+    --region "$REGION" \
+    --content-type "application/zip"
+
+# Upload individual binaries (for direct download from landing page)
+echo "  Uploading individual binaries..."
+for binary in "$ASSETS_DIR"/opencode-auth-*; do
+    # Skip checksum files
+    [[ "$binary" == *.sha256 ]] && continue
+    [[ ! -f "$binary" ]] && continue
+
+    filename=$(basename "$binary")
+    echo "    $filename"
+    aws s3 cp "$binary" "s3://$BUCKET/downloads/$filename" \
+        --profile "$PROFILE" \
+        --region "$REGION" \
+        --content-type "application/octet-stream"
+done
+
+echo ""
+print_success "═══════════════════════════════════════════════════════════════"
+print_success "                    Publication Complete!                       "
+print_success "═══════════════════════════════════════════════════════════════"
+echo ""
+echo "Downloads available at:"
+echo "  https://downloads.oc.example.com"
+echo ""
+echo "Quick start:"
+echo "  1. Download and extract the installer zip"
+echo "  2. Run: ./install.sh (Mac/Linux)"
+echo "  3. Restart your shell"
+echo "  4. Run: oc"
+echo ""

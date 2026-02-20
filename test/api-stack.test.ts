@@ -126,8 +126,9 @@ test('ApiStack creates an S3 bucket for ALB access logs', () => {
   template.resourceCountIs('AWS::S3::Bucket', 1);
 });
 
-test('ApiStack creates 4 listener rules', () => {
-  template.resourceCountIs('AWS::ElasticLoadBalancingV2::ListenerRule', 4);
+test('ApiStack creates 5 listener rules', () => {
+  // Rules: health check, api-keys+JWT, JWT bearer, API key, update endpoints
+  template.resourceCountIs('AWS::ElasticLoadBalancingV2::ListenerRule', 5);
 });
 
 test('ApiStack creates 15 SSM parameters', () => {

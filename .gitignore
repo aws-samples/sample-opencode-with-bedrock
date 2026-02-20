@@ -44,3 +44,6 @@ venv/
 
 # Local feature tracking (not committed)
 docs/features/
+
+# Architecture Decision Records (local reference)
+docs/adr/

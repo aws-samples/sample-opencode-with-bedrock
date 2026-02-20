@@ -1,0 +1,465 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --bg-base: #fafafa;
+    --bg-stronger: #f5f5f5;
+    --bg-strong: #fff;
+    --text-base: #171717;
+    --text-strong: #000;
+    --text-weak: #737373;
+    --text-weaker: #a3a3a3;
+    --border-weak: #e5e5e5;
+    --border-base: #d4d4d4;
+    --accent: #171717;
+    --accent-text: #fff;
+    --code-bg: #1e1e1e;
+    --code-text: #d4d4d4;
+    --user-bg: #171717;
+    --user-text: #fff;
+    --assistant-bg: #f5f5f5;
+    --radius: 8px;
+    --radius-lg: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg-base: #0a0a0a;
+        --bg-stronger: #171717;
+        --bg-strong: #262626;
+        --text-base: #e5e5e5;
+        --text-strong: #fff;
+        --text-weak: #a3a3a3;
+        --text-weaker: #737373;
+        --border-weak: #262626;
+        --border-base: #404040;
+        --accent: #fff;
+        --accent-text: #000;
+        --code-bg: #1e1e1e;
+        --code-text: #d4d4d4;
+        --user-bg: #404040;
+        --user-text: #fff;
+        --assistant-bg: #171717;
+    }
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-base);
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+/* Header */
+.header {
+    background: var(--bg-strong);
+    border-bottom: 1px solid var(--border-weak);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.header-content {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 12px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-decoration: none;
+    color: var(--text-strong);
+    font-weight: 600;
+    font-size: 18px;
+}
+
+.logo svg {
+    flex-shrink: 0;
+}
+
+.header-links {
+    display: flex;
+    gap: 16px;
+}
+
+.icon-link {
+    color: var(--text-weak);
+    text-decoration: none;
+    transition: color 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius);
+}
+
+.icon-link:hover {
+    color: var(--text-base);
+    background: var(--bg-stronger);
+}
+
+/* Main Content */
+.main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+/* Loading */
+.loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 400px;
+    gap: 16px;
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--border-weak);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.loading p {
+    color: var(--text-weak);
+}
+
+/* Error */
+.error {
+    text-align: center;
+    padding: 80px 24px;
+}
+
+.error h2 {
+    font-size: 24px;
+    margin-bottom: 12px;
+    color: var(--text-strong);
+}
+
+.error p {
+    color: var(--text-weak);
+    margin-bottom: 24px;
+}
+
+.btn {
+    display: inline-block;
+    padding: 10px 20px;
+    background: var(--accent);
+    color: var(--accent-text);
+    text-decoration: none;
+    border-radius: var(--radius);
+    font-weight: 500;
+    transition: opacity 0.2s;
+}
+
+.btn:hover {
+    opacity: 0.9;
+}
+
+/* Session Header */
+.session-header {
+    margin-bottom: 32px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border-weak);
+}
+
+.session-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.badge {
+    background: var(--accent);
+    color: var(--accent-text);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.version {
+    font-size: 13px;
+    color: var(--text-weak);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.timestamp {
+    font-size: 13px;
+    color: var(--text-weaker);
+}
+
+.session-title {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text-strong);
+    line-height: 1.3;
+    margin-bottom: 12px;
+}
+
+.model-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--text-weak);
+}
+
+/* Messages */
+.messages {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.message {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.message-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.message-role {
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.message-role.user {
+    background: var(--user-bg);
+    color: var(--user-text);
+}
+
+.message-role.assistant {
+    background: var(--assistant-bg);
+    color: var(--text-base);
+}
+
+.message-content {
+    background: var(--bg-strong);
+    border: 1px solid var(--border-weak);
+    border-radius: var(--radius-lg);
+    padding: 16px 20px;
+}
+
+.message-content p {
+    margin-bottom: 12px;
+}
+
+.message-content p:last-child {
+    margin-bottom: 0;
+}
+
+/* Code Blocks */
+pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 16px;
+    border-radius: var(--radius);
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 12px 0;
+}
+
+code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9em;
+    background: var(--bg-stronger);
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+pre code {
+    background: none;
+    padding: 0;
+}
+
+/* Parts */
+.part {
+    margin: 8px 0;
+}
+
+.part-text {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.part-tool_call, .part-tool_result {
+    background: var(--bg-stronger);
+    border: 1px solid var(--border-weak);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin: 8px 0;
+}
+
+.part-tool_call summary, .part-tool_result summary {
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+}
+
+.part-tool_call pre, .part-tool_result pre {
+    margin-top: 8px;
+    margin-bottom: 0;
+}
+
+/* Thinking/Reasoning */
+.part-reasoning {
+    background: var(--bg-stronger);
+    border-left: 3px solid var(--text-weaker);
+    padding: 12px 16px;
+    margin: 8px 0;
+    font-style: italic;
+    color: var(--text-weak);
+}
+
+/* Footer */
+.footer {
+    text-align: center;
+    padding: 60px 24px 40px;
+    opacity: 0.5;
+}
+
+.footer-logo {
+    opacity: 0.3;
+}
+
+/* Utilities */
+.hidden {
+    display: none !important;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+    .main {
+        padding: 16px;
+    }
+
+    .session-title {
+        font-size: 22px;
+    }
+
+    .message-content {
+        padding: 12px 16px;
+    }
+
+    pre {
+        padding: 12px;
+        font-size: 12px;
+    }
+}
+
+/* Diff styling */
+.diff {
+    background: var(--bg-stronger);
+    border: 1px solid var(--border-weak);
+    border-radius: var(--radius);
+    margin: 12px 0;
+    overflow: hidden;
+}
+
+.diff-header {
+    background: var(--bg-strong);
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border-weak);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.diff-content {
+    padding: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-x: auto;
+}
+
+.diff-line {
+    padding: 2px 8px;
+    white-space: pre;
+}
+
+.diff-line.add {
+    background: rgba(34, 197, 94, 0.1);
+    color: #16a34a;
+}
+
+.diff-line.remove {
+    background: rgba(239, 68, 68, 0.1);
+    color: #dc2626;
+}
+
+.diff-line.context {
+    color: var(--text-weak);
+}
+
+/* File attachments */
+.file-attachment {
+    background: var(--bg-stronger);
+    border: 1px solid var(--border-weak);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin: 8px 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.file-icon {
+    width: 40px;
+    height: 40px;
+    background: var(--bg-strong);
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+}
+
+.file-info {
+    flex: 1;
+}
+
+.file-name {
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.file-size {
+    font-size: 12px;
+    color: var(--text-weaker);
+}

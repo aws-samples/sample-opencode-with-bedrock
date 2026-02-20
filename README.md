@@ -431,8 +431,16 @@ npx cdk destroy OpenCodeApi-dev
 - [x] Multi-platform binaries
 - [x] Documentation
 
-**Current Status:** All phases complete ✅  
+**Current Status:** All phases complete
 **Next:** Testing and optimization
+
+### Share Feature (POC)
+- [ ] Lambda-based share API with event-sourcing storage
+- [ ] WebSocket real-time updates
+- [ ] Standalone HTML viewer with dark mode
+- [ ] CloudFormation templates for Lambda + API Gateway + S3 + DynamoDB
+
+See [docs/SHARE-FEATURE.md](docs/SHARE-FEATURE.md) for full details.
 
 ## Security
 

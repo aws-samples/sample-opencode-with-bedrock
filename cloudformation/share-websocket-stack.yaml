@@ -1,0 +1,581 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  WebSocket API stack for OpenCode share real-time updates.
+  Provides API Gateway WebSocket API with Lambda integration and DynamoDB connection tracking.
+
+Parameters:
+  ShareStackName:
+    Type: String
+    Description: Name of the share stack to import configuration from
+    Default: opencode-share-stack
+
+  NetworkStackName:
+    Type: String
+    Description: Name of the network stack to import VPC configuration from
+    Default: opencode-network-stack
+
+  PrivateSubnetId:
+    Type: String
+    Description: Private subnet ID for Lambda VPC config (leave empty to skip VPC config)
+    Default: ''
+
+  SecurityGroupId:
+    Type: String
+    Description: Security group ID for Lambda VPC config (leave empty to skip VPC config)
+    Default: ''
+
+  StageName:
+    Type: String
+    Default: prod
+    Description: API Gateway stage name
+
+Conditions:
+  HasVpcConfig: !And
+    - !Not [!Equals [!Ref PrivateSubnetId, '']]
+    - !Not [!Equals [!Ref SecurityGroupId, '']]
+
+Resources:
+  #############################################################################
+  # DynamoDB Table for WebSocket Connections
+  #############################################################################
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-connections'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: connectionId
+          AttributeType: S
+        - AttributeName: shareId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: connectionId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: ShareIdIndex
+          KeySchema:
+            - AttributeName: shareId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Project
+          Value: opencode
+        - Key: Stack
+          Value: share-websocket
+
+  #############################################################################
+  # IAM Role for WebSocket Lambda
+  #############################################################################
+  WebSocketLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt ConnectionsTable.Arn
+                  - !Sub '${ConnectionsTable.Arn}/index/*'
+        - PolicyName: APIGatewayAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - execute-api:ManageConnections
+                  - execute-api:Invoke
+                Resource: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ShareWebSocketApi}/*'
+        - !If
+          - HasVpcConfig
+          - PolicyName: VPCAccess
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - ec2:CreateNetworkInterface
+                    - ec2:DescribeNetworkInterfaces
+                    - ec2:DeleteNetworkInterface
+                  Resource: '*'
+          - !Ref 'AWS::NoValue'
+
+  #############################################################################
+  # WebSocket Lambda Functions
+  #############################################################################
+  ConnectLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-connect'
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 10
+      MemorySize: 256
+      Role: !GetAtt WebSocketLambdaRole.Arn
+      Environment:
+        Variables:
+          CONNECTIONS_TABLE: !Ref ConnectionsTable
+      VpcConfig: !If
+        - HasVpcConfig
+        - SubnetIds:
+            - !Ref PrivateSubnetId
+          SecurityGroupIds:
+            - !Ref SecurityGroupId
+        - !Ref 'AWS::NoValue'
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamodb = new AWS.DynamoDB.DocumentClient();
+
+          const TABLE_NAME = process.env.CONNECTIONS_TABLE;
+
+          exports.handler = async (event) => {
+            console.log('Connect event:', JSON.stringify(event));
+
+            const connectionId = event.requestContext.connectionId;
+            const shareId = event.queryStringParameters?.shareId || 'default';
+
+            // Set TTL to 24 hours from now
+            const ttl = Math.floor(Date.now() / 1000) + (24 * 60 * 60);
+
+            try {
+              await dynamodb.put({
+                TableName: TABLE_NAME,
+                Item: {
+                  connectionId,
+                  shareId,
+                  ttl,
+                  connectedAt: new Date().toISOString()
+                }
+              }).promise();
+
+              return { statusCode: 200, body: 'Connected' };
+            } catch (error) {
+              console.error('Error storing connection:', error);
+              return { statusCode: 500, body: 'Failed to connect' };
+            }
+          };
+      Tags:
+        - Key: Project
+          Value: opencode
+        - Key: Stack
+          Value: share-websocket
+
+  DisconnectLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-disconnect'
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 10
+      MemorySize: 256
+      Role: !GetAtt WebSocketLambdaRole.Arn
+      Environment:
+        Variables:
+          CONNECTIONS_TABLE: !Ref ConnectionsTable
+      VpcConfig: !If
+        - HasVpcConfig
+        - SubnetIds:
+            - !Ref PrivateSubnetId
+          SecurityGroupIds:
+            - !Ref SecurityGroupId
+        - !Ref 'AWS::NoValue'
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamodb = new AWS.DynamoDB.DocumentClient();
+
+          const TABLE_NAME = process.env.CONNECTIONS_TABLE;
+
+          exports.handler = async (event) => {
+            console.log('Disconnect event:', JSON.stringify(event));
+
+            const connectionId = event.requestContext.connectionId;
+
+            try {
+              await dynamodb.delete({
+                TableName: TABLE_NAME,
+                Key: { connectionId }
+              }).promise();
+
+              return { statusCode: 200, body: 'Disconnected' };
+            } catch (error) {
+              console.error('Error removing connection:', error);
+              return { statusCode: 500, body: 'Failed to disconnect' };
+            }
+          };
+      Tags:
+        - Key: Project
+          Value: opencode
+        - Key: Stack
+          Value: share-websocket
+
+  DefaultLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-default'
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 512
+      Role: !GetAtt WebSocketLambdaRole.Arn
+      Environment:
+        Variables:
+          CONNECTIONS_TABLE: !Ref ConnectionsTable
+          API_GATEWAY_ENDPOINT: !Sub '${ShareWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
+      VpcConfig: !If
+        - HasVpcConfig
+        - SubnetIds:
+            - !Ref PrivateSubnetId
+          SecurityGroupIds:
+            - !Ref SecurityGroupId
+        - !Ref 'AWS::NoValue'
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamodb = new AWS.DynamoDB.DocumentClient();
+
+          const TABLE_NAME = process.env.CONNECTIONS_TABLE;
+          const API_GATEWAY_ENDPOINT = process.env.API_GATEWAY_ENDPOINT;
+
+          exports.handler = async (event) => {
+            console.log('Default event:', JSON.stringify(event));
+
+            const connectionId = event.requestContext.connectionId;
+            const body = JSON.parse(event.body || '{}');
+
+            try {
+              // Get connection info
+              const connection = await dynamodb.get({
+                TableName: TABLE_NAME,
+                Key: { connectionId }
+              }).promise();
+
+              if (!connection.Item) {
+                return { statusCode: 410, body: 'Connection not found' };
+              }
+
+              const shareId = connection.Item.shareId;
+
+              // Handle different actions
+              switch (body.action) {
+                case 'subscribe':
+                  // Update connection with share ID
+                  await dynamodb.update({
+                    TableName: TABLE_NAME,
+                    Key: { connectionId },
+                    UpdateExpression: 'set shareId = :shareId',
+                    ExpressionAttributeValues: {
+                      ':shareId': body.shareId || shareId
+                    }
+                  }).promise();
+
+                  // Send confirmation
+                  await postToConnection(connectionId, { type: 'subscribed', shareId });
+                  break;
+
+                case 'ping':
+                  await postToConnection(connectionId, { type: 'pong' });
+                  break;
+
+                default:
+                  console.log('Unknown action:', body.action);
+              }
+
+              return { statusCode: 200, body: 'Message processed' };
+            } catch (error) {
+              console.error('Error processing message:', error);
+              return { statusCode: 500, body: 'Failed to process message' };
+            }
+          };
+
+          async function postToConnection(connectionId, data) {
+            const apigatewaymanagementapi = new AWS.ApiGatewayManagementApi({
+              apiVersion: '2018-11-29',
+              endpoint: API_GATEWAY_ENDPOINT
+            });
+
+            await apigatewaymanagementapi.postToConnection({
+              ConnectionId: connectionId,
+              Data: JSON.stringify(data)
+            }).promise();
+          }
+      Tags:
+        - Key: Project
+          Value: opencode
+        - Key: Stack
+          Value: share-websocket
+
+  BroadcastLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-broadcast'
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 60
+      MemorySize: 512
+      Role: !GetAtt WebSocketLambdaRole.Arn
+      Environment:
+        Variables:
+          CONNECTIONS_TABLE: !Ref ConnectionsTable
+          API_GATEWAY_ENDPOINT: !Sub '${ShareWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
+      VpcConfig: !If
+        - HasVpcConfig
+        - SubnetIds:
+            - !Ref PrivateSubnetId
+          SecurityGroupIds:
+            - !Ref SecurityGroupId
+        - !Ref 'AWS::NoValue'
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamodb = new AWS.DynamoDB.DocumentClient();
+
+          const TABLE_NAME = process.env.CONNECTIONS_TABLE;
+
+          exports.handler = async (event) => {
+            console.log('Broadcast event:', JSON.stringify(event));
+
+            const { shareId, message } = event;
+
+            try {
+              // Query all connections for this share
+              const result = await dynamodb.query({
+                TableName: TABLE_NAME,
+                IndexName: 'ShareIdIndex',
+                KeyConditionExpression: 'shareId = :shareId',
+                ExpressionAttributeValues: {
+                  ':shareId': shareId
+                }
+              }).promise();
+
+              const apigatewaymanagementapi = new AWS.ApiGatewayManagementApi({
+                apiVersion: '2018-11-29',
+                endpoint: process.env.API_GATEWAY_ENDPOINT
+              });
+
+              // Send message to all connections
+              const sendPromises = result.Items.map(async (item) => {
+                try {
+                  await apigatewaymanagementapi.postToConnection({
+                    ConnectionId: item.connectionId,
+                    Data: JSON.stringify(message)
+                  }).promise();
+                } catch (error) {
+                  if (error.statusCode === 410) {
+                    // Connection is stale, remove it
+                    await dynamodb.delete({
+                      TableName: TABLE_NAME,
+                      Key: { connectionId: item.connectionId }
+                    }).promise();
+                  } else {
+                    console.error('Error sending message:', error);
+                  }
+                }
+              });
+
+              await Promise.all(sendPromises);
+
+              return { statusCode: 200, body: 'Broadcast complete' };
+            } catch (error) {
+              console.error('Error broadcasting:', error);
+              return { statusCode: 500, body: 'Broadcast failed' };
+            }
+          };
+      Tags:
+        - Key: Project
+          Value: opencode
+        - Key: Stack
+          Value: share-websocket
+
+  #############################################################################
+  # API Gateway WebSocket API
+  #############################################################################
+  ShareWebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: '$request.body.action'
+      Tags:
+        - Key: Project
+          Value: opencode
+        - Key: Stack
+          Value: share-websocket
+
+  #############################################################################
+  # API Gateway Integrations
+  #############################################################################
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ShareWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConnectLambda.Arn}/invocations'
+      IntegrationMethod: POST
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ShareWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DisconnectLambda.Arn}/invocations'
+      IntegrationMethod: POST
+
+  DefaultIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ShareWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DefaultLambda.Arn}/invocations'
+      IntegrationMethod: POST
+
+  #############################################################################
+  # API Gateway Routes
+  #############################################################################
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ShareWebSocketApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${ConnectIntegration}'
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ShareWebSocketApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${DisconnectIntegration}'
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ShareWebSocketApi
+      RouteKey: $default
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${DefaultIntegration}'
+
+  #############################################################################
+  # API Gateway Stage
+  #############################################################################
+  ProdStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: !Ref StageName
+      ApiId: !Ref ShareWebSocketApi
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 1000
+        ThrottlingRateLimit: 500
+      AccessLogSettings:
+        DestinationArn: !GetAtt WebSocketLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","routeKey":"$context.routeKey","status":"$context.status","integrationLatency":"$context.integrationLatency"}'
+
+  #############################################################################
+  # CloudWatch Log Group
+  #############################################################################
+  WebSocketLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${AWS::StackName}'
+      RetentionInDays: 30
+
+  #############################################################################
+  # Lambda Permissions
+  #############################################################################
+  ConnectLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ConnectLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${ShareWebSocketApi}/*'
+
+  DisconnectLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DisconnectLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${ShareWebSocketApi}/*'
+
+  DefaultLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DefaultLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${ShareWebSocketApi}/*'
+
+  #############################################################################
+  # CloudWatch Alarms
+  #############################################################################
+  WebSocketErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-websocket-errors'
+      AlarmDescription: Alarm when WebSocket errors exceed threshold
+      MetricName: Errors
+      Namespace: AWS/ApiGateway
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ApiId
+          Value: !Ref ShareWebSocketApi
+        - Name: Stage
+          Value: !Ref StageName
+
+Outputs:
+  WebSocketApiId:
+    Description: WebSocket API ID
+    Value: !Ref ShareWebSocketApi
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiId'
+
+  WebSocketEndpoint:
+    Description: WebSocket endpoint URL
+    Value: !Sub 'wss://${ShareWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-Endpoint'
+
+  ConnectionsTableName:
+    Description: DynamoDB table name for connections
+    Value: !Ref ConnectionsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-ConnectionsTable'
+
+  BroadcastLambdaArn:
+    Description: Lambda ARN for broadcasting messages
+    Value: !GetAtt BroadcastLambda.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BroadcastLambdaArn'

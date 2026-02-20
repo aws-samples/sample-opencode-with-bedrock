@@ -1,0 +1,22 @@
+{
+  "name": "opencode-share-api-lambda",
+  "version": "1.0.0",
+  "description": "OpenCode Share API Lambda functions",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "package": "npm run build && npm run install:prod && zip -r share-api.zip dist/ node_modules/",
+    "install:prod": "npm ci --production",
+    "clean": "rm -rf dist/ node_modules/ share-api.zip"
+  },
+  "dependencies": {
+    "@aws-sdk/client-lambda": "^3.600.0",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.131",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

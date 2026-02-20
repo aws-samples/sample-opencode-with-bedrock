@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenCode Share</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <div class="header-content">
+                <a href="https://opencode.ai" class="logo">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="32" height="32" rx="6" fill="#000"/>
+                        <path d="M8 8h6v6H8V8zm10 0h6v6h-6V8zM8 18h6v6H8v-6zm10 0h6v6h-6v-6z" fill="#fff"/>
+                    </svg>
+                    <span>OpenCode</span>
+                </a>
+                <div class="header-links">
+                    <a href="https://github.com/aws-samples/sample-opencode-with-bedrock" target="_blank" class="icon-link" title="GitHub">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
+                        </svg>
+                    </a>
+                </div>
+            </div>
+        </header>
+
+        <main class="main">
+            <div id="loading" class="loading">
+                <div class="spinner"></div>
+                <p>Loading share...</p>
+            </div>
+
+            <div id="error" class="error hidden">
+                <h2>Share Not Found</h2>
+                <p>This share may have expired or been deleted.</p>
+                <a href="https://opencode.ai" class="btn">Go to OpenCode</a>
+            </div>
+
+            <div id="content" class="content hidden">
+                <div class="session-header">
+                    <div class="session-meta">
+                        <span class="badge">OpenCode</span>
+                        <span class="version" id="version"></span>
+                        <span class="timestamp" id="timestamp"></span>
+                    </div>
+                    <h1 class="session-title" id="title"></h1>
+                    <div class="model-info" id="model-info"></div>
+                </div>
+
+                <div class="messages" id="messages"></div>
+
+                <div class="footer">
+                    <svg width="120" height="24" viewBox="0 0 120 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="footer-logo">
+                        <rect width="24" height="24" rx="4" fill="#000"/>
+                        <path d="M6 6h4.5v4.5H6V6zm7.5 0h4.5v4.5h-4.5V6zM6 13.5h4.5V18H6v-4.5zm7.5 0h4.5V18h-4.5v-4.5z" fill="#fff"/>
+                        <text x="32" y="17" font-family="Inter, sans-serif" font-size="14" font-weight="600" fill="#000">OpenCode</text>
+                    </svg>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="viewer.js"></script>
+</body>
+</html>

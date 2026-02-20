@@ -1,0 +1,378 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Share Lambda stack for OpenCode infrastructure.
+  Provides share functionality with Lambda, API Gateway, S3 storage, and WebSocket support.
+
+Parameters:
+  NetworkStackName:
+    Type: String
+    Description: Name of the network stack to import VPC configuration from
+    Default: opencode-network-stack
+
+  IngressStackName:
+    Type: String
+    Description: Name of the ingress stack to import ALB configuration from
+    Default: opencode-ingress-stack
+
+  CognitoStackName:
+    Type: String
+    Description: Name of the cognito stack to import user pool configuration from
+    Default: opencode-cognito-stack
+
+  WebSocketStackName:
+    Type: String
+    Description: Name of the WebSocket stack for broadcasting
+    Default: opencode-share-websocket-stack
+
+  LambdaMemorySize:
+    Type: Number
+    Default: 512
+    Description: Lambda memory size in MB
+
+  LambdaTimeout:
+    Type: Number
+    Default: 30
+    Description: Lambda timeout in seconds
+
+Resources:
+  #############################################################################
+  # S3 Bucket for Share Data
+  #############################################################################
+  ShareDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-data-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+          - Id: DeleteOldEvents
+            Status: Enabled
+            Prefix: 'share_event/'
+            ExpirationInDays: 90
+      Tags:
+        - Key: Project
+          Value: opencode
+        - Key: Stack
+          Value: share
+
+  ShareDataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ShareDataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub '${ShareDataBucket.Arn}'
+              - !Sub '${ShareDataBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+
+  #############################################################################
+  # IAM Role for Lambda
+  #############################################################################
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3ShareAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ShareDataBucket.Arn
+                  - !Sub '${ShareDataBucket.Arn}/*'
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*'
+        - PolicyName: XRayAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: '*'
+
+  #############################################################################
+  # Lambda Function
+  #############################################################################
+  ShareApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-api'
+      Runtime: nodejs20.x
+      Handler: index.handler
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeout
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ message: 'Placeholder - update code via CLI' })
+            };
+          };
+      Environment:
+        Variables:
+          OPENCODE_STORAGE_ADAPTER: s3
+          OPENCODE_STORAGE_BUCKET: !Ref ShareDataBucket
+          OPENCODE_STORAGE_REGION: !Ref AWS::Region
+          BROADCAST_LAMBDA_ARN: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${WebSocketStackName}-broadcast'
+          NODE_ENV: production
+      TracingConfig:
+        Mode: Active
+      Tags:
+        - Key: Project
+          Value: opencode
+        - Key: Stack
+          Value: share
+
+  #############################################################################
+  # Lambda Function URL (for direct access)
+  #############################################################################
+  ShareApiFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !Ref ShareApiFunction
+      Cors:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - DELETE
+        AllowHeaders:
+          - content-type
+          - authorization
+          - x-share-secret
+        MaxAge: 86400
+
+  #############################################################################
+  # API Gateway HTTP API
+  #############################################################################
+  ShareApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      ProtocolType: HTTP
+      Target: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ShareApiFunction.Arn}/invocations'
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - content-type
+          - authorization
+          - x-share-secret
+        MaxAge: 86400
+      Tags:
+        Project: opencode
+        Stack: share
+
+  #############################################################################
+  # API Gateway Integration
+  #############################################################################
+  ShareApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ShareApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ShareApiFunction.Arn}/invocations'
+      IntegrationMethod: POST
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 30000
+
+  #############################################################################
+  # API Gateway Routes
+  #############################################################################
+  ShareApiRouteHealth:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ShareApiGateway
+      RouteKey: 'GET /health'
+      Target: !Sub 'integrations/${ShareApiIntegration}'
+
+  ShareApiRouteCreate:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ShareApiGateway
+      RouteKey: 'POST /api/share'
+      Target: !Sub 'integrations/${ShareApiIntegration}'
+
+  ShareApiRouteSync:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ShareApiGateway
+      RouteKey: 'POST /api/share/{shareID}/sync'
+      Target: !Sub 'integrations/${ShareApiIntegration}'
+
+  ShareApiRouteGetData:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ShareApiGateway
+      RouteKey: 'GET /api/share/{shareID}/data'
+      Target: !Sub 'integrations/${ShareApiIntegration}'
+
+  ShareApiRouteDelete:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ShareApiGateway
+      RouteKey: 'DELETE /api/share/{shareID}'
+      Target: !Sub 'integrations/${ShareApiIntegration}'
+
+  ShareApiRouteView:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ShareApiGateway
+      RouteKey: 'GET /share/{shareID}'
+      Target: !Sub 'integrations/${ShareApiIntegration}'
+
+  #############################################################################
+  # API Gateway Stage
+  #############################################################################
+  ShareApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: prod
+      ApiId: !Ref ShareApiGateway
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 1000
+        ThrottlingRateLimit: 500
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiGatewayLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","routeKey":"$context.routeKey","status":"$context.status","integrationLatency":"$context.integrationLatency"}'
+
+  #############################################################################
+  # CloudWatch Log Groups
+  #############################################################################
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-api'
+      RetentionInDays: 30
+
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/${AWS::StackName}'
+      RetentionInDays: 30
+
+  #############################################################################
+  # Lambda Permission for API Gateway
+  #############################################################################
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ShareApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ShareApiGateway}/*'
+
+  #############################################################################
+  # CloudWatch Alarms
+  #############################################################################
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-lambda-errors'
+      AlarmDescription: Alarm when Lambda errors exceed threshold
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ShareApiFunction
+
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-lambda-throttles'
+      AlarmDescription: Alarm when Lambda is throttled
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ShareApiFunction
+
+Outputs:
+  ShareBucketName:
+    Description: S3 bucket name for share data
+    Value: !Ref ShareDataBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
+
+  ShareBucketArn:
+    Description: S3 bucket ARN for share data
+    Value: !GetAtt ShareDataBucket.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketArn'
+
+  ShareApiGatewayEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ShareApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiEndpoint'
+
+  ShareLambdaArn:
+    Description: Lambda function ARN
+    Value: !GetAtt ShareApiFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaArn'

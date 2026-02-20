@@ -67,6 +67,33 @@ def handler(event, context):
             "body": json.dumps({"status": "healthy", "service": "distribution"}),
         }
 
+    # Version manifest endpoint (unauthenticated — served via ALB rule at priority 5)
+    if path == "/version.json":
+        try:
+            response = s3.get_object(Bucket=BUCKET, Key="downloads/version.json")
+            body = response["Body"].read().decode("utf-8")
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Cache-Control": "max-age=300",
+                },
+                "body": body,
+            }
+        except s3.exceptions.NoSuchKey:
+            return {
+                "statusCode": 404,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"error": "Version manifest not published yet"}),
+            }
+        except Exception as e:
+            logger.error("Error fetching version.json: %s", e)
+            return {
+                "statusCode": 500,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"error": "Failed to fetch version manifest"}),
+            }
+
     # Get user info from OIDC
     user = get_user_from_oidc_data(headers)
 

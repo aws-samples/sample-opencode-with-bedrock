@@ -11,6 +11,10 @@ PROFILE="${AWS_PROFILE:-opencode}"
 REGION="${AWS_REGION:-us-east-1}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 VERSION="${VERSION:-dev}"
+MINIMUM_VERSION=""
+CONFIG_VERSION=""
+CRITICAL="false"
+MESSAGE=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -31,14 +35,20 @@ Usage: $(basename "$0") [OPTIONS]
 Package and upload opencode-auth distribution to S3.
 
 Options:
-    --profile PROFILE    AWS profile to use (default: opencode)
-    --region REGION      AWS region (default: us-east-1)
-    --version VERSION    Version string (default: dev)
-    --help               Show this help message
+    --profile PROFILE              AWS profile to use (default: opencode)
+    --region REGION                AWS region (default: us-east-1)
+    --environment ENV              Environment name (default: dev)
+    --version VERSION              Version string (default: dev)
+    --minimum-version VERSION      Minimum supported client version (for version enforcement)
+    --config-version N             Config patch version number (integer)
+    --critical                     Mark this release as critical (security fix)
+    --message MESSAGE              Release message shown to users
+    --help                         Show this help message
 
 Examples:
     $(basename "$0") --profile opencode
     $(basename "$0") --profile opencode --version 1.0.0
+    $(basename "$0") --version 1.1.0 --minimum-version 1.0.0 --critical --message "Security fix"
 EOF
     exit 0
 }
@@ -54,8 +64,28 @@ while [[ $# -gt 0 ]]; do
             REGION="$2"
             shift 2
             ;;
+        --environment)
+            ENVIRONMENT="$2"
+            shift 2
+            ;;
         --version)
             VERSION="$2"
+            shift 2
+            ;;
+        --minimum-version)
+            MINIMUM_VERSION="$2"
+            shift 2
+            ;;
+        --config-version)
+            CONFIG_VERSION="$2"
+            shift 2
+            ;;
+        --critical)
+            CRITICAL="true"
+            shift
+            ;;
+        --message)
+            MESSAGE="$2"
             shift 2
             ;;
         --help)
@@ -185,6 +215,14 @@ API_DOMAIN=$(aws cloudformation describe-stacks \
     --query 'Stacks[0].Outputs[?OutputKey==`ApiDomainName`].OutputValue' \
     --output text 2>/dev/null || echo "")
 
+# Get distribution web domain from Distribution stack
+WEB_DOMAIN=$(aws cloudformation describe-stacks \
+    --stack-name "OpenCodeDistribution-${ENVIRONMENT}" \
+    --region "$REGION" \
+    --profile "$PROFILE" \
+    --query 'Stacks[0].Outputs[?OutputKey==`WebDomainName`].OutputValue' \
+    --output text 2>/dev/null || echo "")
+
 if [[ -n "$CLI_CLIENT_ID" ]] && [[ "$CLI_CLIENT_ID" != "None" ]]; then
     echo "  CLI Client ID: $CLI_CLIENT_ID"
 fi
@@ -193,6 +231,9 @@ if [[ -n "$API_DOMAIN" ]] && [[ "$API_DOMAIN" != "None" ]]; then
 fi
 if [[ -n "$OIDC_ISSUER" ]] && [[ "$OIDC_ISSUER" != "None" ]]; then
     echo "  OIDC Issuer: $OIDC_ISSUER"
+fi
+if [[ -n "$WEB_DOMAIN" ]] && [[ "$WEB_DOMAIN" != "None" ]]; then
+    echo "  Web Domain: $WEB_DOMAIN"
 fi
 echo ""
 
@@ -272,13 +313,85 @@ for binary in "$ASSETS_DIR"/opencode-auth-*; do
         --content-type "application/octet-stream"
 done
 
+# Step 3: Generate and upload version.json manifest
+print_info "Step 3: Publishing version manifest..."
+
+if [[ "$VERSION" != "dev" ]]; then
+    # Determine minimum version: use --minimum-version if set, otherwise try to read
+    # the current minimum from existing version.json on S3
+    if [[ -z "$MINIMUM_VERSION" ]]; then
+        EXISTING_MANIFEST=$(aws s3 cp "s3://$BUCKET/downloads/version.json" - \
+            --profile "$PROFILE" \
+            --region "$REGION" 2>/dev/null || echo "")
+        if [[ -n "$EXISTING_MANIFEST" ]]; then
+            MINIMUM_VERSION=$(echo "$EXISTING_MANIFEST" | python3 -c "import sys,json; print(json.load(sys.stdin).get('minimum',''))" 2>/dev/null || echo "")
+        fi
+        if [[ -z "$MINIMUM_VERSION" ]]; then
+            MINIMUM_VERSION="$VERSION"
+        fi
+    fi
+
+    # Determine config_version: use --config-version if set, otherwise read from
+    # existing manifest and keep the same value
+    if [[ -z "$CONFIG_VERSION" ]]; then
+        if [[ -n "$EXISTING_MANIFEST" ]]; then
+            CONFIG_VERSION=$(echo "$EXISTING_MANIFEST" | python3 -c "import sys,json; print(json.load(sys.stdin).get('config_version',1))" 2>/dev/null || echo "1")
+        else
+            CONFIG_VERSION="1"
+        fi
+    fi
+
+    RELEASE_DATE=$(date -u +%Y-%m-%d)
+
+    # Derive download URL from distribution web domain
+    DOWNLOAD_URL=""
+    if [[ -n "$WEB_DOMAIN" ]] && [[ "$WEB_DOMAIN" != "None" ]]; then
+        DOWNLOAD_URL="https://${WEB_DOMAIN}"
+    fi
+
+    # Generate version.json
+    VERSION_JSON=$(python3 -c "
+import json
+manifest = {
+    'latest': '${VERSION}',
+    'minimum': '${MINIMUM_VERSION}',
+    'config_version': int('${CONFIG_VERSION}'),
+    'released': '${RELEASE_DATE}',
+    'download_url': '${DOWNLOAD_URL}',
+    'changelog_url': '',
+    'critical': $( [ "${CRITICAL}" = "true" ] && echo "True" || echo "False" ),
+    'message': '${MESSAGE}'
+}
+print(json.dumps(manifest, indent=2))
+")
+
+    echo "$VERSION_JSON" | aws s3 cp - "s3://$BUCKET/downloads/version.json" \
+        --profile "$PROFILE" \
+        --region "$REGION" \
+        --content-type "application/json" \
+        --cache-control "max-age=300"
+
+    echo "  Version manifest uploaded:"
+    echo "    latest:         $VERSION"
+    echo "    minimum:        $MINIMUM_VERSION"
+    echo "    config_version: $CONFIG_VERSION"
+    echo "    critical:       $CRITICAL"
+    if [[ -n "$MESSAGE" ]]; then
+        echo "    message:        $MESSAGE"
+    fi
+else
+    print_warning "  Skipping version.json (version is 'dev')"
+fi
+
 echo ""
 print_success "═══════════════════════════════════════════════════════════════"
 print_success "                    Publication Complete!                       "
 print_success "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "Downloads available at:"
-echo "  https://downloads.oc.example.com"
+if [[ -n "$WEB_DOMAIN" ]] && [[ "$WEB_DOMAIN" != "None" ]]; then
+    echo "Downloads available at:"
+    echo "  https://${WEB_DOMAIN}"
+fi
 echo ""
 echo "Quick start:"
 echo "  1. Download and extract the installer zip"

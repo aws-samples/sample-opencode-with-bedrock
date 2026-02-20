@@ -3,9 +3,11 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -36,21 +38,23 @@ const (
 
 // ProxyConfig stores the proxy runtime configuration
 type ProxyConfig struct {
-	Port      int       `json:"port"`
-	PID       int       `json:"pid"`
-	Started   time.Time `json:"started"`
-	TargetURL string    `json:"target_url"`
+	Port          int       `json:"port"`
+	PID           int       `json:"pid"`
+	Started       time.Time `json:"started"`
+	TargetURL     string    `json:"target_url"`
+	ClientVersion string    `json:"client_version,omitempty"`
 }
 
 // Server represents the local proxy server
 type Server struct {
-	config    *config.Config
-	proxy     *httputil.ReverseProxy
-	targetURL *url.URL
-	port      int
-	server    *http.Server
-	refresher *Refresher
-	stopChan  chan struct{}
+	config        *config.Config
+	proxy         *httputil.ReverseProxy
+	targetURL     *url.URL
+	port          int
+	server        *http.Server
+	refresher     *Refresher
+	stopChan      chan struct{}
+	ClientVersion string // injected by main.go — sent as X-Client-Version header
 }
 
 // NewServerWithPort creates a new proxy server instance with a specific port
@@ -111,7 +115,49 @@ func newServerInternal(cfg *config.Config, port int, checkPort bool) (*Server, e
 		originalDirector(req)
 		server.addAuthHeader(req)
 	}
+	// Intercept 426 Upgrade Required responses from server-side version gate
+	reverseProxy.ModifyResponse = func(resp *http.Response) error {
+		if resp.StatusCode == http.StatusUpgradeRequired {
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err == nil {
+				var errResp struct {
+					Error struct {
+						Message        string `json:"message"`
+						MinimumVersion string `json:"minimum_version"`
+						YourVersion    string `json:"your_version"`
+						UpdateCommand  string `json:"update_command"`
+					} `json:"error"`
+				}
+				if json.Unmarshal(body, &errResp) == nil && errResp.Error.MinimumVersion != "" {
+					updateCmd := errResp.Error.UpdateCommand
+					if updateCmd == "" {
+						updateCmd = "opencode-auth update && oc"
+					}
+					fmt.Fprintf(os.Stderr, "\n"+
+						"[proxy] ══════════════════════════════════════════════════\n"+
+						"[proxy]  CLIENT UPDATE REQUIRED\n"+
+						"[proxy]\n"+
+						"[proxy]  Your version:     v%s\n"+
+						"[proxy]  Minimum required: v%s\n"+
+						"[proxy]\n"+
+						"[proxy]  To update, run:\n"+
+						"[proxy]    %s\n"+
+						"[proxy] ══════════════════════════════════════════════════\n\n",
+						errResp.Error.YourVersion,
+						errResp.Error.MinimumVersion,
+						updateCmd,
+					)
+				}
+				// Restore the body so the upstream caller (opencode) still sees it
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+			}
+		}
+		return nil
+	}
+
 	server.proxy = reverseProxy
+	server.ClientVersion = cfg.ClientVersion
 
 	// Create HTTP server
 	mux := http.NewServeMux()
@@ -146,10 +192,11 @@ func (s *Server) Start() error {
 
 	// Save proxy configuration
 	proxyConfig := &ProxyConfig{
-		Port:      s.port,
-		PID:       os.Getpid(),
-		Started:   time.Now(),
-		TargetURL: s.targetURL.String(),
+		Port:          s.port,
+		PID:           os.Getpid(),
+		Started:       time.Now(),
+		TargetURL:     s.targetURL.String(),
+		ClientVersion: s.ClientVersion,
 	}
 	if err := SaveProxyConfig(s.config, proxyConfig); err != nil {
 		return fmt.Errorf("failed to save proxy config: %w", err)
@@ -418,6 +465,11 @@ func (s *Server) addAuthHeader(req *http.Request) {
 	// Ensure proper host header for the target
 	req.Host = s.targetURL.Host
 
+	// Always add client version header for server-side version enforcement
+	if s.ClientVersion != "" {
+		req.Header.Set("X-Client-Version", s.ClientVersion)
+	}
+
 	// API key management paths always use JWT (required by ALB rule)
 	isManagementPath := strings.HasPrefix(req.URL.Path, "/v1/api-keys")
 
@@ -565,9 +617,24 @@ func StartProxy(cfg *config.Config) (*ProxyConfig, error) {
 	// Check if already running (after acquiring lock)
 	if existing, err := LoadProxyConfig(cfg); err == nil {
 		if IsProcessRunning(existing.PID) {
-			return existing, nil // Already running
+			// Verify the proxy is actually responsive, not just alive
+			healthURL := fmt.Sprintf("http://localhost:%d/health", existing.Port)
+			client := &http.Client{Timeout: portCheckTimeout}
+			if resp, err := client.Get(healthURL); err == nil {
+				resp.Body.Close()
+				return existing, nil // Running and responsive
+			}
+			// Process is alive but not listening — kill it and start fresh
+			if process, err := os.FindProcess(existing.PID); err == nil {
+				terminateProcess(process)
+				time.Sleep(200 * time.Millisecond)
+				if IsProcessRunning(existing.PID) {
+					process.Kill()
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
 		}
-		// Stale config, clean it up
+		// Stale or dead config, clean it up
 		configPath := filepath.Join(cfg.ConfigDir, proxyConfigFile)
 		os.Remove(configPath)
 	}
@@ -591,6 +658,12 @@ func StartProxy(cfg *config.Config) (*ProxyConfig, error) {
 		if err := cmd.Start(); err != nil {
 			return nil, fmt.Errorf("failed to start proxy daemon: %w", err)
 		}
+
+		// Reap the child process in the background to prevent zombies.
+		// The daemon is long-lived, so this goroutine normally blocks until
+		// the parent process exits, but if the daemon crashes it prevents
+		// a zombie from lingering.
+		go cmd.Wait()
 
 		// Give the daemon time to start and write its config
 		time.Sleep(500 * time.Millisecond)

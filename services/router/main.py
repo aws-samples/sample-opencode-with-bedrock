@@ -56,6 +56,134 @@ MANTLE_URL = os.environ.get(
 )
 SERVICE_VERSION = os.environ.get("SERVICE_VERSION", "1.0.0")
 
+# ---------------------------------------------------------------------------
+# Version policy cache — for server-side version enforcement (426 Upgrade Required)
+# ---------------------------------------------------------------------------
+DISTRIBUTION_BUCKET = os.environ.get("DISTRIBUTION_BUCKET", "")
+DISTRIBUTION_DOMAIN = os.environ.get("DISTRIBUTION_DOMAIN", "")
+_version_policy = {"minimum": None, "fetched_at": 0}
+VERSION_POLICY_TTL = 300  # 5 minutes
+
+
+def _parse_semver(v):
+    """Parse a semver string like '1.2.3' into a tuple (major, minor, patch)."""
+    v = v.lstrip("v")
+    parts = v.split(".", 2)
+    if len(parts) != 3:
+        return None
+    try:
+        patch_str = parts[2].split("-")[0].split("+")[0]
+        return (int(parts[0]), int(parts[1]), int(patch_str))
+    except (ValueError, IndexError):
+        return None
+
+
+def _fetch_version_policy():
+    """Fetch version.json from S3 and cache the minimum version."""
+    now = time.time()
+    if (
+        _version_policy["minimum"] is not None
+        and now < _version_policy["fetched_at"] + VERSION_POLICY_TTL
+    ):
+        return _version_policy["minimum"]
+
+    if not DISTRIBUTION_BUCKET:
+        return None
+
+    try:
+        s3 = boto3.client("s3", config=BotoConfig(signature_version="s3v4"))
+        resp = s3.get_object(Bucket=DISTRIBUTION_BUCKET, Key="downloads/version.json")
+        manifest = json.loads(resp["Body"].read().decode("utf-8"))
+        _version_policy["minimum"] = manifest.get("minimum", "")
+        _version_policy["fetched_at"] = now
+        log.info(
+            "Refreshed version policy", extra={"minimum": _version_policy["minimum"]}
+        )
+        return _version_policy["minimum"]
+    except Exception as e:
+        log.warning("Failed to fetch version policy", extra={"error": str(e)})
+        # Return cached value if available, None otherwise
+        return _version_policy["minimum"]
+
+
+@web.middleware
+async def version_gate_middleware(request, handler):
+    """Reject requests from clients below the minimum supported version."""
+    path = request.path
+
+    # Skip health checks and the self-update endpoint (blocked clients must be
+    # able to update themselves)
+    if (
+        path in ("/health", "/ready")
+        or path.startswith("/health/")
+        or path.startswith("/v1/update/")
+    ):
+        return await handler(request)
+
+    client_version = request.headers.get("X-Client-Version", "")
+
+    # Allow requests without the header (backward compat with old clients)
+    if not client_version:
+        return await handler(request)
+
+    # Allow dev builds
+    if client_version == "dev":
+        return await handler(request)
+
+    # Fetch minimum version (cached)
+    loop = asyncio.get_event_loop()
+    minimum = await loop.run_in_executor(_executor, _fetch_version_policy)
+
+    if not minimum:
+        return await handler(request)
+
+    client_parsed = _parse_semver(client_version)
+    min_parsed = _parse_semver(minimum)
+
+    if client_parsed is None or min_parsed is None:
+        # Can't parse — allow through
+        return await handler(request)
+
+    if client_parsed < min_parsed:
+        log.warning(
+            "Client version rejected",
+            extra={
+                "client_version": client_version,
+                "minimum_version": minimum,
+                "path": path,
+            },
+        )
+        download_hint = ""
+        if DISTRIBUTION_DOMAIN:
+            download_hint = (
+                f"\n"
+                f"Or download the latest installer from:\n"
+                f"\n"
+                f"  https://{DISTRIBUTION_DOMAIN}"
+            )
+        return web.json_response(
+            {
+                "error": {
+                    "message": (
+                        f"Your opencode-auth client (v{client_version}) is below the minimum "
+                        f"required version (v{minimum}). Run the following to update:\n"
+                        f"\n"
+                        f"  opencode-auth update && oc"
+                        f"{download_hint}"
+                    ),
+                    "type": "version_error",
+                    "code": "client_outdated",
+                    "minimum_version": minimum,
+                    "your_version": client_version,
+                    "update_command": "opencode-auth update && oc",
+                }
+            },
+            status=426,
+        )
+
+    return await handler(request)
+
+
 # Model mapping — override via BEDROCK_MODEL_MAP env var (JSON string)
 DEFAULT_MODEL_MAP = {
     "kimi-k25": "moonshotai.kimi-k2.5",
@@ -63,8 +191,8 @@ DEFAULT_MODEL_MAP = {
     "bedrock/kimi-k2-thinking": "moonshotai.kimi-k2-thinking",
     "claude-opus": "us.anthropic.claude-opus-4-6-v1",
     "bedrock/claude-opus": "us.anthropic.claude-opus-4-6-v1",
-    "claude-sonnet": "us.anthropic.claude-sonnet-4-6-v1",
-    "bedrock/claude-sonnet": "us.anthropic.claude-sonnet-4-6-v1",
+    "claude-sonnet": "us.anthropic.claude-sonnet-4-6",
+    "bedrock/claude-sonnet": "us.anthropic.claude-sonnet-4-6",
     "claude-sonnet-45": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "bedrock/claude-sonnet-45": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
 }
@@ -155,7 +283,9 @@ def translate_openai_to_converse(body):
             # Multiple consecutive tool messages must merge into ONE user
             # message — Converse API requires strictly alternating roles.
             tool_call_id = msg.get("tool_call_id", "")
-            result_content = content if isinstance(content, str) else json.dumps(content)
+            result_content = (
+                content if isinstance(content, str) else json.dumps(content)
+            )
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,
@@ -165,10 +295,12 @@ def translate_openai_to_converse(body):
             if converse_messages and converse_messages[-1]["role"] == "user":
                 converse_messages[-1]["content"].append(tool_result_block)
             else:
-                converse_messages.append({
-                    "role": "user",
-                    "content": [tool_result_block],
-                })
+                converse_messages.append(
+                    {
+                        "role": "user",
+                        "content": [tool_result_block],
+                    }
+                )
             continue
 
         # Convert content to Converse format
@@ -179,8 +311,7 @@ def translate_openai_to_converse(body):
             # Strip empty text blocks — Converse rejects blank text
             # alongside toolUse blocks.
             converse_content = [
-                b for b in converse_content
-                if not ("text" in b and not b["text"])
+                b for b in converse_content if not ("text" in b and not b["text"])
             ]
             for tc in msg["tool_calls"]:
                 fn = tc.get("function", {})
@@ -189,13 +320,15 @@ def translate_openai_to_converse(body):
                     args_json = json.loads(args_str)
                 except (json.JSONDecodeError, TypeError):
                     args_json = {"raw": args_str}
-                converse_content.append({
-                    "toolUse": {
-                        "toolUseId": tc.get("id", ""),
-                        "name": fn.get("name", ""),
-                        "input": args_json,
+                converse_content.append(
+                    {
+                        "toolUse": {
+                            "toolUseId": tc.get("id", ""),
+                            "name": fn.get("name", ""),
+                            "input": args_json,
+                        }
                     }
-                })
+                )
 
         converse_messages.append({"role": role, "content": converse_content})
 
@@ -306,12 +439,14 @@ def _translate_content(content):
                         fmt = media_type.split("/")[-1]
                         if fmt == "jpg":
                             fmt = "jpeg"
-                        blocks.append({
-                            "image": {
-                                "format": fmt,
-                                "source": {"bytes": base64.b64decode(b64data)},
+                        blocks.append(
+                            {
+                                "image": {
+                                    "format": fmt,
+                                    "source": {"bytes": base64.b64decode(b64data)},
+                                }
                             }
-                        })
+                        )
                     else:
                         # URL reference — pass as text since Converse doesn't fetch URLs
                         blocks.append({"text": f"[Image URL: {url_data}]"})
@@ -342,15 +477,17 @@ def translate_converse_to_openai(response, model, request_id):
                 reasoning_parts.append(rc["reasoningText"]["text"])
         elif "toolUse" in block:
             tu = block["toolUse"]
-            tool_calls.append({
-                "index": tool_idx,
-                "id": tu.get("toolUseId", f"call_{tool_idx}"),
-                "type": "function",
-                "function": {
-                    "name": tu.get("name", ""),
-                    "arguments": json.dumps(tu.get("input", {})),
-                },
-            })
+            tool_calls.append(
+                {
+                    "index": tool_idx,
+                    "id": tu.get("toolUseId", f"call_{tool_idx}"),
+                    "type": "function",
+                    "function": {
+                        "name": tu.get("name", ""),
+                        "arguments": json.dumps(tu.get("input", {})),
+                    },
+                }
+            )
             tool_idx += 1
 
     finish_reason = _map_stop_reason(stop_reason)
@@ -381,8 +518,7 @@ def translate_converse_to_openai(response, model, request_id):
         "usage": {
             "prompt_tokens": usage.get("inputTokens", 0),
             "completion_tokens": usage.get("outputTokens", 0),
-            "total_tokens": usage.get("inputTokens", 0)
-            + usage.get("outputTokens", 0),
+            "total_tokens": usage.get("inputTokens", 0) + usage.get("outputTokens", 0),
         },
     }
 
@@ -493,7 +629,10 @@ async def handle_anthropic_streaming(body, request_id, request):
                                     "index": tool_idx,
                                     "id": tu.get("toolUseId", ""),
                                     "type": "function",
-                                    "function": {"name": tu.get("name", ""), "arguments": ""},
+                                    "function": {
+                                        "name": tu.get("name", ""),
+                                        "arguments": "",
+                                    },
                                 }
                             ]
                         },
@@ -548,8 +687,33 @@ async def handle_anthropic_streaming(body, request_id, request):
                 await _write_sse(response, json.dumps(chunk))
 
             elif "metadata" in event:
-                # Stream complete — metadata contains usage info
-                pass
+                # Stream complete — extract and emit usage info
+                meta_usage = event["metadata"].get("usage", {})
+                if meta_usage:
+                    prompt_tok = meta_usage.get("inputTokens", 0)
+                    completion_tok = meta_usage.get("outputTokens", 0)
+                    total_tok = prompt_tok + completion_tok
+                    usage_chunk = _make_sse_chunk(
+                        request_id,
+                        model,
+                        delta={},
+                        usage={
+                            "prompt_tokens": prompt_tok,
+                            "completion_tokens": completion_tok,
+                            "total_tokens": total_tok,
+                        },
+                    )
+                    await _write_sse(response, json.dumps(usage_chunk))
+                    log.info(
+                        "Stream usage emitted",
+                        extra={
+                            "request_id": request_id,
+                            "model": model,
+                            "prompt_tokens": prompt_tok,
+                            "completion_tokens": completion_tok,
+                            "total_tokens": total_tok,
+                        },
+                    )
 
         await _write_sse(response, "[DONE]")
         await response.write_eof()
@@ -584,9 +748,7 @@ async def _iter_stream_events(stream):
     iterator = iter(stream)
     while True:
         try:
-            event = await loop.run_in_executor(
-                _executor, lambda: next(iterator, None)
-            )
+            event = await loop.run_in_executor(_executor, lambda: next(iterator, None))
             if event is None:
                 break
             yield event
@@ -599,18 +761,21 @@ async def _write_sse(response, data):
     await response.write(f"data: {data}\n\n".encode("utf-8"))
 
 
-def _make_sse_chunk(request_id, model, delta, finish_reason=None):
+def _make_sse_chunk(request_id, model, delta, finish_reason=None, usage=None):
     """Build an OpenAI-compatible streaming chunk."""
     choice = {"index": 0, "delta": delta}
     if finish_reason:
         choice["finish_reason"] = finish_reason
-    return {
+    chunk = {
         "id": f"chatcmpl-{request_id}",
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
         "choices": [choice],
     }
+    if usage is not None:
+        chunk["usage"] = usage
+    return chunk
 
 
 # ---------------------------------------------------------------------------
@@ -680,8 +845,13 @@ async def api_key_auth_middleware(request, handler):
     """Validate X-API-Key header for non-JWT requests."""
     path = request.path
 
-    # Skip health checks and management endpoints (JWT-protected separately)
-    if path in ("/health", "/ready") or path.startswith("/health/") or path.startswith("/v1/api-keys"):
+    # Skip health checks, management endpoints, and update endpoints
+    if (
+        path in ("/health", "/ready")
+        or path.startswith("/health/")
+        or path.startswith("/v1/api-keys")
+        or path.startswith("/v1/update/")
+    ):
         return await handler(request)
 
     # Skip if Authorization header present (JWT path — already validated by ALB)
@@ -699,7 +869,13 @@ async def api_key_auth_middleware(request, handler):
     api_key = request.headers.get("X-API-Key", "")
     if not api_key or not api_key.startswith(API_KEY_PREFIX):
         return web.json_response(
-            {"error": {"message": "Authentication required", "type": "auth_error", "code": "missing_credentials"}},
+            {
+                "error": {
+                    "message": "Authentication required",
+                    "type": "auth_error",
+                    "code": "missing_credentials",
+                }
+            },
             status=401,
         )
 
@@ -713,9 +889,7 @@ async def api_key_auth_middleware(request, handler):
         request["user_sub"] = cached["user_sub"]
         request["user_email"] = cached["user_email"]
         # Fire-and-forget last_used_at update
-        asyncio.get_event_loop().run_in_executor(
-            _executor, _update_last_used, key_hash
-        )
+        asyncio.get_event_loop().run_in_executor(_executor, _update_last_used, key_hash)
         return await handler(request)
 
     # Validate against DynamoDB
@@ -725,20 +899,38 @@ async def api_key_auth_middleware(request, handler):
     except Exception as e:
         log.error("DynamoDB lookup failed", extra={"error": str(e)})
         return web.json_response(
-            {"error": {"message": "Internal authentication error", "type": "auth_error", "code": "internal_error"}},
+            {
+                "error": {
+                    "message": "Internal authentication error",
+                    "type": "auth_error",
+                    "code": "internal_error",
+                }
+            },
             status=500,
         )
 
     if not item:
         return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "auth_error", "code": "invalid_api_key"}},
+            {
+                "error": {
+                    "message": "Invalid API key",
+                    "type": "auth_error",
+                    "code": "invalid_api_key",
+                }
+            },
             status=401,
         )
 
     # Check status
     if item.get("status") != "active":
         return web.json_response(
-            {"error": {"message": "API key has been revoked", "type": "auth_error", "code": "revoked_api_key"}},
+            {
+                "error": {
+                    "message": "API key has been revoked",
+                    "type": "auth_error",
+                    "code": "revoked_api_key",
+                }
+            },
             status=401,
         )
 
@@ -746,7 +938,13 @@ async def api_key_auth_middleware(request, handler):
     expires_at = item.get("expires_at", "")
     if expires_at and datetime.fromisoformat(expires_at) < datetime.now(timezone.utc):
         return web.json_response(
-            {"error": {"message": "API key has expired", "type": "auth_error", "code": "expired_api_key"}},
+            {
+                "error": {
+                    "message": "API key has expired",
+                    "type": "auth_error",
+                    "code": "expired_api_key",
+                }
+            },
             status=401,
         )
 
@@ -791,6 +989,7 @@ def _update_last_used(key_hash):
 # API Key Management Endpoints (JWT-protected)
 # ---------------------------------------------------------------------------
 
+
 def _extract_jwt_identity(request):
     """Extract user identity from JWT Bearer token (ALB already validated)."""
     auth_header = request.headers.get("Authorization", "")
@@ -808,7 +1007,8 @@ async def create_api_key(request):
     user_sub, user_email = _extract_jwt_identity(request)
     if not user_sub:
         return web.json_response(
-            {"error": "Authentication required"}, status=401,
+            {"error": "Authentication required"},
+            status=401,
             headers={"X-Request-ID": request_id},
         )
 
@@ -827,20 +1027,25 @@ async def create_api_key(request):
         expires_in_days = DEFAULT_EXPIRY_DAYS
     if expires_in_days < MIN_EXPIRY_DAYS or expires_in_days > MAX_EXPIRY_DAYS:
         return web.json_response(
-            {"error": f"expires_in_days must be between {MIN_EXPIRY_DAYS} and {MAX_EXPIRY_DAYS}"},
-            status=400, headers={"X-Request-ID": request_id},
+            {
+                "error": f"expires_in_days must be between {MIN_EXPIRY_DAYS} and {MAX_EXPIRY_DAYS}"
+            },
+            status=400,
+            headers={"X-Request-ID": request_id},
         )
 
     # Check max keys per user
     loop = asyncio.get_event_loop()
     try:
-        existing_keys = await loop.run_in_executor(
-            _executor, _list_user_keys, user_sub
-        )
+        existing_keys = await loop.run_in_executor(_executor, _list_user_keys, user_sub)
     except Exception as e:
-        log.error("Failed to list user keys", extra={"error": str(e), "request_id": request_id})
+        log.error(
+            "Failed to list user keys",
+            extra={"error": str(e), "request_id": request_id},
+        )
         return web.json_response(
-            {"error": "Internal error"}, status=500,
+            {"error": "Internal error"},
+            status=500,
             headers={"X-Request-ID": request_id},
         )
 
@@ -848,7 +1053,8 @@ async def create_api_key(request):
     if len(active_keys) >= MAX_KEYS_PER_USER:
         return web.json_response(
             {"error": f"Maximum of {MAX_KEYS_PER_USER} active API keys per user"},
-            status=409, headers={"X-Request-ID": request_id},
+            status=409,
+            headers={"X-Request-ID": request_id},
         )
 
     # Generate key
@@ -875,9 +1081,13 @@ async def create_api_key(request):
     try:
         await loop.run_in_executor(_executor, _put_api_key, item)
     except Exception as e:
-        log.error("Failed to create API key", extra={"error": str(e), "request_id": request_id})
+        log.error(
+            "Failed to create API key",
+            extra={"error": str(e), "request_id": request_id},
+        )
         return web.json_response(
-            {"error": "Failed to create API key"}, status=500,
+            {"error": "Failed to create API key"},
+            status=500,
             headers={"X-Request-ID": request_id},
         )
 
@@ -910,7 +1120,8 @@ async def list_api_keys(request):
     user_sub, _ = _extract_jwt_identity(request)
     if not user_sub:
         return web.json_response(
-            {"error": "Authentication required"}, status=401,
+            {"error": "Authentication required"},
+            status=401,
             headers={"X-Request-ID": request_id},
         )
 
@@ -918,22 +1129,27 @@ async def list_api_keys(request):
     try:
         items = await loop.run_in_executor(_executor, _list_user_keys, user_sub)
     except Exception as e:
-        log.error("Failed to list API keys", extra={"error": str(e), "request_id": request_id})
+        log.error(
+            "Failed to list API keys", extra={"error": str(e), "request_id": request_id}
+        )
         return web.json_response(
-            {"error": "Internal error"}, status=500,
+            {"error": "Internal error"},
+            status=500,
             headers={"X-Request-ID": request_id},
         )
 
     keys = []
     for item in items:
-        keys.append({
-            "key_prefix": item.get("key_prefix", ""),
-            "description": item.get("description", ""),
-            "status": item.get("status", ""),
-            "created_at": item.get("created_at", ""),
-            "expires_at": item.get("expires_at", ""),
-            "last_used_at": item.get("last_used_at", None),
-        })
+        keys.append(
+            {
+                "key_prefix": item.get("key_prefix", ""),
+                "description": item.get("description", ""),
+                "status": item.get("status", ""),
+                "created_at": item.get("created_at", ""),
+                "expires_at": item.get("expires_at", ""),
+                "last_used_at": item.get("last_used_at", None),
+            }
+        )
 
     return web.json_response(
         {"keys": keys},
@@ -947,14 +1163,16 @@ async def revoke_api_key(request):
     user_sub, _ = _extract_jwt_identity(request)
     if not user_sub:
         return web.json_response(
-            {"error": "Authentication required"}, status=401,
+            {"error": "Authentication required"},
+            status=401,
             headers={"X-Request-ID": request_id},
         )
 
     key_prefix = request.match_info.get("key_prefix", "")
     if not key_prefix:
         return web.json_response(
-            {"error": "key_prefix is required"}, status=400,
+            {"error": "key_prefix is required"},
+            status=400,
             headers={"X-Request-ID": request_id},
         )
 
@@ -963,9 +1181,13 @@ async def revoke_api_key(request):
     try:
         items = await loop.run_in_executor(_executor, _list_user_keys, user_sub)
     except Exception as e:
-        log.error("Failed to list keys for revocation", extra={"error": str(e), "request_id": request_id})
+        log.error(
+            "Failed to list keys for revocation",
+            extra={"error": str(e), "request_id": request_id},
+        )
         return web.json_response(
-            {"error": "Internal error"}, status=500,
+            {"error": "Internal error"},
+            status=500,
             headers={"X-Request-ID": request_id},
         )
 
@@ -977,13 +1199,15 @@ async def revoke_api_key(request):
 
     if not target:
         return web.json_response(
-            {"error": "API key not found"}, status=404,
+            {"error": "API key not found"},
+            status=404,
             headers={"X-Request-ID": request_id},
         )
 
     if target.get("status") == "revoked":
         return web.json_response(
-            {"error": "API key already revoked"}, status=409,
+            {"error": "API key already revoked"},
+            status=409,
             headers={"X-Request-ID": request_id},
         )
 
@@ -993,9 +1217,13 @@ async def revoke_api_key(request):
             _executor, _revoke_api_key, target["key_hash"], user_sub
         )
     except Exception as e:
-        log.error("Failed to revoke API key", extra={"error": str(e), "request_id": request_id})
+        log.error(
+            "Failed to revoke API key",
+            extra={"error": str(e), "request_id": request_id},
+        )
         return web.json_response(
-            {"error": "Failed to revoke API key"}, status=500,
+            {"error": "Failed to revoke API key"},
+            status=500,
             headers={"X-Request-ID": request_id},
         )
 
@@ -1243,6 +1471,27 @@ async def chat_completions(request):
             async with session.post(target, json=body, headers=headers) as resp:
                 if not is_stream:
                     data = await resp.read()
+                    # Log whether Mantle response includes usage data
+                    try:
+                        resp_json = json.loads(data)
+                        mantle_usage = resp_json.get("usage")
+                        log.info(
+                            "Mantle non-streaming response",
+                            extra={
+                                "request_id": request_id,
+                                "status": resp.status,
+                                "has_usage": mantle_usage is not None,
+                                "usage": mantle_usage,
+                            },
+                        )
+                    except (json.JSONDecodeError, Exception):
+                        log.warning(
+                            "Mantle response not JSON-parseable",
+                            extra={
+                                "request_id": request_id,
+                                "status": resp.status,
+                            },
+                        )
                     return web.Response(
                         body=data,
                         status=resp.status,
@@ -1261,8 +1510,30 @@ async def chat_completions(request):
                 )
                 await response.prepare(request)
 
+                last_data_line = None
                 async for chunk in resp.content.iter_any():
+                    # Track last SSE data line for usage diagnostics
+                    chunk_str = chunk.decode("utf-8", errors="replace")
+                    for line in chunk_str.split("\n"):
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            last_data_line = line[6:]
                     await response.write(chunk)
+
+                # Log whether the final SSE chunk from Mantle contained usage
+                if last_data_line:
+                    try:
+                        last_chunk_json = json.loads(last_data_line)
+                        mantle_stream_usage = last_chunk_json.get("usage")
+                        log.info(
+                            "Mantle streaming complete",
+                            extra={
+                                "request_id": request_id,
+                                "has_usage": mantle_stream_usage is not None,
+                                "usage": mantle_stream_usage,
+                            },
+                        )
+                    except (json.JSONDecodeError, Exception):
+                        pass
 
                 await response.write_eof()
                 return response
@@ -1297,8 +1568,110 @@ def setup_signal_handlers(app):
         )
 
 
+# ---------------------------------------------------------------------------
+# Update management endpoints
+# ---------------------------------------------------------------------------
+
+
+async def update_download_url(request):
+    """Return a presigned S3 URL for the installer zip."""
+    if not DISTRIBUTION_BUCKET:
+        return web.json_response(
+            {
+                "error": {
+                    "message": "Distribution bucket not configured",
+                    "type": "server_error",
+                }
+            },
+            status=500,
+        )
+
+    loop = asyncio.get_event_loop()
+    try:
+
+        def _generate():
+            s3 = boto3.client("s3", config=BotoConfig(signature_version="s3v4"))
+            return s3.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": DISTRIBUTION_BUCKET,
+                    "Key": "downloads/opencode-installer.zip",
+                },
+                ExpiresIn=3600,
+            )
+
+        url = await loop.run_in_executor(_executor, _generate)
+        return web.json_response({"download_url": url, "expires_in": 3600})
+    except Exception as e:
+        log.error("Failed to generate download URL", extra={"error": str(e)})
+        return web.json_response(
+            {
+                "error": {
+                    "message": "Failed to generate download URL",
+                    "type": "server_error",
+                }
+            },
+            status=500,
+        )
+
+
+async def update_config(request):
+    """Return the config patch for clients to apply."""
+    if not DISTRIBUTION_BUCKET:
+        return web.json_response(
+            {
+                "error": {
+                    "message": "Distribution bucket not configured",
+                    "type": "server_error",
+                }
+            },
+            status=500,
+        )
+
+    loop = asyncio.get_event_loop()
+    try:
+
+        def _fetch():
+            s3 = boto3.client("s3", config=BotoConfig(signature_version="s3v4"))
+            resp = s3.get_object(
+                Bucket=DISTRIBUTION_BUCKET, Key="downloads/config-patch.json"
+            )
+            return resp["Body"].read().decode("utf-8")
+
+        body = await loop.run_in_executor(_executor, _fetch)
+        return web.Response(text=body, content_type="application/json")
+    except Exception as e:
+        error_str = str(e)
+        if "NoSuchKey" in error_str:
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "No config patch published yet",
+                        "type": "not_found",
+                    }
+                },
+                status=404,
+            )
+        log.error("Failed to fetch config patch", extra={"error": error_str})
+        return web.json_response(
+            {
+                "error": {
+                    "message": "Failed to fetch config patch",
+                    "type": "server_error",
+                }
+            },
+            status=500,
+        )
+
+
 # Create application
-app = web.Application(middlewares=[api_key_auth_middleware, request_logging_middleware])
+app = web.Application(
+    middlewares=[
+        version_gate_middleware,
+        api_key_auth_middleware,
+        request_logging_middleware,
+    ]
+)
 app.router.add_get("/health", health)
 app.router.add_get("/ready", ready)
 app.router.add_get("/v1/models", models)
@@ -1307,6 +1680,9 @@ app.router.add_post("/v1/chat/completions", chat_completions)
 app.router.add_post("/v1/api-keys", create_api_key)
 app.router.add_get("/v1/api-keys", list_api_keys)
 app.router.add_delete("/v1/api-keys/{key_prefix}", revoke_api_key)
+# Update management endpoints (JWT-protected via ALB rule)
+app.router.add_get("/v1/update/download-url", update_download_url)
+app.router.add_get("/v1/update/config", update_config)
 app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":

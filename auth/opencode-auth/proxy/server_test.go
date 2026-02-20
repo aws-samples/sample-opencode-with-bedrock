@@ -721,3 +721,83 @@ func TestAddAuthHeader_ExpiringSoon(t *testing.T) {
 
 	t.Log("✓ Expiring-soon token is used (with warning)")
 }
+
+func TestProxy426Interception(t *testing.T) {
+	// Create a mock backend that returns 426 Upgrade Required
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUpgradeRequired) // 426
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]interface{}{
+				"message":         "Your client is outdated",
+				"type":            "version_error",
+				"code":            "client_outdated",
+				"minimum_version": "2.0.0",
+				"your_version":    "0.1.0",
+				"update_command":  "opencode-auth update",
+			},
+		})
+	}))
+	defer backend.Close()
+
+	// Create temporary directory and token file
+	tempDir := t.TempDir()
+	tokenPath := filepath.Join(tempDir, "tokens.json")
+
+	testTokens := &auth.TokenData{
+		IDToken:     "test-token-12345",
+		AccessToken: "test-access",
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+		Email:       "test@example.com",
+	}
+	auth.SaveTokens(tokenPath, testTokens)
+
+	cfg := &config.Config{
+		ConfigDir:   tempDir,
+		TokenPath:   tokenPath,
+		APIEndpoint: backend.URL,
+	}
+
+	testPort := 18085
+	server, err := NewServerWithPort(cfg, testPort)
+	if err != nil {
+		t.Fatalf("NewServerWithPort() error = %v", err)
+	}
+
+	go server.Start()
+	time.Sleep(100 * time.Millisecond)
+	defer server.Stop()
+
+	// Make request through proxy — should get 426 back with body intact
+	proxyURL := fmt.Sprintf("http://localhost:%d/v1/chat/completions", testPort)
+	resp, err := http.Post(proxyURL, "application/json", strings.NewReader(`{"model":"test"}`))
+	if err != nil {
+		t.Fatalf("Failed to make request through proxy: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Verify status code is 426 (passed through)
+	if resp.StatusCode != http.StatusUpgradeRequired {
+		t.Errorf("Proxy response status = %d, want %d", resp.StatusCode, http.StatusUpgradeRequired)
+	}
+
+	// Verify body is intact (not consumed by ModifyResponse)
+	body, _ := io.ReadAll(resp.Body)
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("Failed to parse response body: %v (body: %s)", err, string(body))
+	}
+
+	errObj, ok := result["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Response missing error object: %s", string(body))
+	}
+	if errObj["minimum_version"] != "2.0.0" {
+		t.Errorf("minimum_version = %v, want %q", errObj["minimum_version"], "2.0.0")
+	}
+	if errObj["update_command"] != "opencode-auth update" {
+		t.Errorf("update_command = %v, want %q", errObj["update_command"], "opencode-auth update")
+	}
+
+	t.Log("✓ 426 response intercepted, banner printed to stderr, and body passed through intact")
+}

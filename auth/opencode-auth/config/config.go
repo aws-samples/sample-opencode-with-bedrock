@@ -32,6 +32,10 @@ type Config struct {
 	APIEndpoint string
 	// API key for programmatic access (alternative to JWT)
 	APIKey string
+	// Version check URL for update notifications
+	VersionCheckURL string
+	// Client version string (injected from main.version for proxy header)
+	ClientVersion string
 	// Debug mode for verbose logging
 	Debug bool
 }
@@ -135,6 +139,7 @@ type OpenCodeConfig struct {
 	TokenEndpoint     string `json:"token_endpoint,omitempty"`
 	Issuer            string `json:"issuer,omitempty"`
 	APIKey            string `json:"api_key,omitempty"`
+	VersionCheckURL   string `json:"version_check_url,omitempty"`
 }
 
 // SaveOpenCodeConfig writes the config back to ~/.opencode/config.json.

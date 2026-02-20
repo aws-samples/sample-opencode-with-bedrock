@@ -41,3 +41,6 @@ venv/
 
 # npm artifacts
 *.tgz
+
+# Local feature tracking (not committed)
+docs/features/

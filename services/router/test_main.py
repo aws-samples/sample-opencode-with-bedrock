@@ -109,3 +109,99 @@ class TestStopReasonMapping:
         assert main._map_stop_reason("max_tokens") == "length"
         assert main._map_stop_reason("content_filtered") == "content_filter"
         assert main._map_stop_reason("unknown_reason") == "stop"  # default
+
+
+class TestSSEChunk:
+    """Verify _make_sse_chunk builds correct OpenAI-compatible chunks."""
+
+    def test_basic_chunk_without_usage(self):
+        """_make_sse_chunk without usage should not include usage field."""
+        import main
+
+        chunk = main._make_sse_chunk("req-1", "test-model", delta={"content": "hello"})
+        assert chunk["id"] == "chatcmpl-req-1"
+        assert chunk["object"] == "chat.completion.chunk"
+        assert chunk["model"] == "test-model"
+        assert chunk["choices"][0]["delta"] == {"content": "hello"}
+        assert "usage" not in chunk
+
+    def test_chunk_with_finish_reason(self):
+        """_make_sse_chunk with finish_reason should include it in the choice."""
+        import main
+
+        chunk = main._make_sse_chunk(
+            "req-2", "test-model", delta={}, finish_reason="stop"
+        )
+        assert chunk["choices"][0]["finish_reason"] == "stop"
+        assert "usage" not in chunk
+
+    def test_chunk_with_usage(self):
+        """_make_sse_chunk with usage should include usage at top level."""
+        import main
+
+        usage = {
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+        }
+        chunk = main._make_sse_chunk("req-3", "test-model", delta={}, usage=usage)
+        assert "usage" in chunk
+        assert chunk["usage"]["prompt_tokens"] == 100
+        assert chunk["usage"]["completion_tokens"] == 50
+        assert chunk["usage"]["total_tokens"] == 150
+
+    def test_chunk_with_usage_none_omits_field(self):
+        """_make_sse_chunk with usage=None should not include usage field."""
+        import main
+
+        chunk = main._make_sse_chunk("req-4", "test-model", delta={}, usage=None)
+        assert "usage" not in chunk
+
+
+class TestConverseResponseTranslation:
+    """Verify translate_converse_to_openai extracts usage correctly."""
+
+    def test_usage_extraction_from_converse_response(self):
+        """translate_converse_to_openai should map inputTokens/outputTokens."""
+        import main
+
+        converse_response = {
+            "output": {
+                "message": {
+                    "content": [{"text": "Hello there"}],
+                    "role": "assistant",
+                }
+            },
+            "usage": {
+                "inputTokens": 42,
+                "outputTokens": 17,
+            },
+            "stopReason": "end_turn",
+        }
+        result = main.translate_converse_to_openai(
+            converse_response, "test-model", "req-5"
+        )
+        assert result["usage"]["prompt_tokens"] == 42
+        assert result["usage"]["completion_tokens"] == 17
+        assert result["usage"]["total_tokens"] == 59
+
+    def test_usage_defaults_to_zero_when_missing(self):
+        """translate_converse_to_openai should default to 0 when usage is empty."""
+        import main
+
+        converse_response = {
+            "output": {
+                "message": {
+                    "content": [{"text": "Hi"}],
+                    "role": "assistant",
+                }
+            },
+            "usage": {},
+            "stopReason": "end_turn",
+        }
+        result = main.translate_converse_to_openai(
+            converse_response, "test-model", "req-6"
+        )
+        assert result["usage"]["prompt_tokens"] == 0
+        assert result["usage"]["completion_tokens"] == 0
+        assert result["usage"]["total_tokens"] == 0

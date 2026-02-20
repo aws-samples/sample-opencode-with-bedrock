@@ -18,6 +18,7 @@ export interface ApiStackProps extends cdk.StackProps {
   hostedZoneId: string;
   hostedZoneName: string;
   domainName: string;  // e.g., "oc.example.com"
+  webDomain?: string;  // e.g., "downloads.oc.example.com" — passed to router as DISTRIBUTION_DOMAIN
 }
 
 export class ApiStack extends cdk.Stack {
@@ -357,6 +358,17 @@ export class ApiStack extends cdk.Stack {
     // Grant DynamoDB permissions for API key validation
     apiKeysTable.grantReadWriteData(taskRole);
 
+    // Grant S3 read access to distribution bucket for version policy and download URLs
+    const distributionBucketName = ssm.StringParameter.valueFromLookup(
+      this,
+      `/opencode/${props.environment}/distribution/assets-bucket-name`
+    );
+    taskRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['s3:GetObject'],
+      resources: [`arn:aws:s3:::${distributionBucketName}/downloads/*`],
+    }));
+
     new ssm.StringParameter(this, 'TaskRoleArnParam', {
       parameterName: `/opencode/${props.environment}/ecs/task-role-arn`,
       stringValue: taskRole.roleArn,
@@ -401,6 +413,8 @@ export class ApiStack extends cdk.Stack {
         SERVICE_VERSION: '1.0.0',
         AWS_REGION: cdk.Aws.REGION,
         API_KEYS_TABLE_NAME: apiKeysTable.tableName,
+        DISTRIBUTION_BUCKET: distributionBucketName,
+        ...(props.webDomain ? { DISTRIBUTION_DOMAIN: props.webDomain } : {}),
       },
       healthCheck: {
         command: ['CMD-SHELL', 'python -c "import urllib.request; urllib.request.urlopen(\'http://localhost:8080/health\')" || exit 1'],
@@ -429,6 +443,29 @@ export class ApiStack extends cdk.Stack {
           field: 'path-pattern',
           pathPatternConfig: {
             values: ['/health', '/health/*', '/ready'],
+          },
+        },
+      ],
+      actions: [
+        {
+          type: 'forward',
+          targetGroupArn: this.targetGroup.targetGroupArn,
+        },
+      ],
+    });
+
+    // Update endpoints rule (Priority 2) - No ALB auth required
+    // These serve non-sensitive data (config patches, presigned download URLs)
+    // and must be accessible to clients with expired tokens so they can self-update.
+    // The router's own auth middleware handles API key validation for download URLs.
+    const updateEndpointRule = new elbv2.CfnListenerRule(this, 'UpdateEndpointRule', {
+      listenerArn: this.listener.listenerArn,
+      priority: 2,
+      conditions: [
+        {
+          field: 'path-pattern',
+          pathPatternConfig: {
+            values: ['/v1/update/*'],
           },
         },
       ],
@@ -642,6 +679,16 @@ export class ApiStack extends cdk.Stack {
         reason: 'DynamoDB grantReadWriteData() generates index/* wildcard for GSI query access — this is CDK standard behavior',
         appliesTo: [
           `Resource::<ApiKeysTable9F4DC7E7.Arn>/index/*`,
+        ],
+      },
+    ], true);
+
+    NagSuppressions.addResourceSuppressions(taskRole, [
+      {
+        id: 'AwsSolutions-IAM5',
+        reason: 'S3 downloads/* wildcard required for version policy lookup and presigned download URL generation — scoped to the downloads/ prefix only',
+        appliesTo: [
+          `Resource::arn:aws:s3:::${distributionBucketName}/downloads/*`,
         ],
       },
     ], true);

@@ -276,10 +276,16 @@ export class DistributionStack extends cdk.Stack {
       stringValue: targetGroup.targetGroupArn,
     });
 
-    // OIDC ALB client secret is stored in Secrets Manager.
-    // For Cognito mode, `deploy.sh auth` creates this automatically via ensure_alb_client_secret().
-    // For external OIDC providers, `setup.sh` or `setup-oidc-provider.sh` handles creation.
-    // CloudFormation dynamic reference keeps the secret out of the template.
+    // OIDC ALB client secret is stored in Secrets Manager
+    // Secret must be created manually before deployment.
+    // See: docs/SECRETS-SETUP.md for detailed instructions.
+    //
+    // Quick setup:
+    //   aws secretsmanager create-secret \
+    //     --name opencode/${props.environment}/oidc-alb-client-secret \
+    //     --secret-string <actual-client-secret>
+    //
+    // We use CloudFormation dynamic reference to avoid exposing the secret in template
     const secretName = `opencode/${props.environment}/oidc-alb-client-secret`;
     const clientSecret = cdk.Fn.sub('{{resolve:secretsmanager:' + secretName + ':SecretString}}');
 
@@ -343,6 +349,34 @@ export class DistributionStack extends cdk.Stack {
         {
           type: 'forward',
           order: 2,
+          targetGroupArn: targetGroup.targetGroupArn,
+        },
+      ],
+    });
+
+    // Unauthenticated rule for /version.json (version check endpoint)
+    // This must have a higher priority (lower number) than the OIDC rule so
+    // it is evaluated first and served without authentication.
+    new elbv2.CfnListenerRule(this, 'VersionJsonRule', {
+      listenerArn: httpsListener.ref,
+      priority: 5,
+      conditions: [
+        {
+          field: 'host-header',
+          hostHeaderConfig: {
+            values: [props.webDomain],
+          },
+        },
+        {
+          field: 'path-pattern',
+          pathPatternConfig: {
+            values: ['/version.json'],
+          },
+        },
+      ],
+      actions: [
+        {
+          type: 'forward',
           targetGroupArn: targetGroup.targetGroupArn,
         },
       ],

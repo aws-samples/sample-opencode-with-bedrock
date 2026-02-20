@@ -17,17 +17,22 @@ import (
 	"github.com/aws-samples/sample-opencode-with-bedrock/auth/opencode-auth/apikey"
 	"github.com/aws-samples/sample-opencode-with-bedrock/auth/opencode-auth/auth"
 	"github.com/aws-samples/sample-opencode-with-bedrock/auth/opencode-auth/config"
+	"github.com/aws-samples/sample-opencode-with-bedrock/auth/opencode-auth/configpatch"
 	"github.com/aws-samples/sample-opencode-with-bedrock/auth/opencode-auth/proxy"
+	updatepkg "github.com/aws-samples/sample-opencode-with-bedrock/auth/opencode-auth/update"
+	versionpkg "github.com/aws-samples/sample-opencode-with-bedrock/auth/opencode-auth/version"
 	"github.com/spf13/cobra"
 )
 
 var (
-	cfg     *config.Config
-	version = "dev"
+	cfg           *config.Config
+	version       = "dev"
+	noUpdateCheck bool
 )
 
 func main() {
 	cfg = config.DefaultConfig()
+	cfg.ClientVersion = version
 
 	rootCmd := &cobra.Command{
 		Use:   "opencode-auth",
@@ -49,6 +54,7 @@ Environment variables:
 	rootCmd.PersistentFlags().StringVar(&cfg.AuthorizeEndpoint, "authorize-endpoint", cfg.AuthorizeEndpoint, "OIDC authorization endpoint")
 	rootCmd.PersistentFlags().StringVar(&cfg.TokenEndpoint, "token-endpoint", cfg.TokenEndpoint, "OIDC token endpoint")
 	rootCmd.PersistentFlags().IntVar(&cfg.CallbackPort, "port", cfg.CallbackPort, "Local callback port")
+	rootCmd.PersistentFlags().BoolVar(&noUpdateCheck, "no-update-check", false, "Skip version update check")
 
 	// Add commands
 	rootCmd.AddCommand(loginCmd())
@@ -58,6 +64,7 @@ Environment variables:
 	rootCmd.AddCommand(runCmd())
 	rootCmd.AddCommand(proxyCmd())
 	rootCmd.AddCommand(apikeyCmd())
+	rootCmd.AddCommand(updateCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -144,6 +151,9 @@ func applyOpenCodeConfig(cfg *config.Config, oc *config.OpenCodeConfig) {
 	}
 	if cfg.TokenEndpoint == "" {
 		cfg.TokenEndpoint = oc.TokenEndpoint
+	}
+	if cfg.VersionCheckURL == "" {
+		cfg.VersionCheckURL = oc.VersionCheckURL
 	}
 }
 
@@ -330,6 +340,26 @@ func runStatus() error {
 	if !tokens.IsExpired() {
 		remaining := time.Until(tokens.ExpiresAt)
 		fmt.Printf("Time remaining: %s\n", remaining.Round(time.Second))
+	}
+
+	// Check for updates (synchronous in status command — informational)
+	if !noUpdateCheck && !versionpkg.IsDev(version) {
+		checkURL := cfg.VersionCheckURL
+		if checkURL == "" {
+			// Try to load from config file
+			if oc, err := config.LoadOpenCodeConfig(); err == nil {
+				checkURL = oc.VersionCheckURL
+			}
+		}
+		if checkURL != "" {
+			if info, _, err := versionpkg.CheckForUpdate(version, checkURL); err == nil {
+				if info != nil && info.Available {
+					fmt.Printf("Update: v%s available (current: v%s)\n", info.Latest, info.Current)
+				} else {
+					fmt.Println("Update: Up to date")
+				}
+			}
+		}
 	}
 
 	return nil
@@ -541,6 +571,26 @@ func runOpenCode(args []string) error {
 	// Apply config file values
 	applyOpenCodeConfig(cfg, openCodeConfig)
 
+	// Start async version check (non-blocking)
+	type versionResult struct {
+		info     *versionpkg.UpdateInfo
+		manifest *versionpkg.Manifest
+	}
+	versionCh := make(chan *versionResult, 1)
+	if !noUpdateCheck && !versionpkg.IsDev(version) && cfg.VersionCheckURL != "" {
+		go func() {
+			info, manifest, err := versionpkg.CheckForUpdate(version, cfg.VersionCheckURL)
+			if err != nil {
+				// Silently ignore errors — version check must never block
+				versionCh <- nil
+				return
+			}
+			versionCh <- &versionResult{info: info, manifest: manifest}
+		}()
+	} else {
+		versionCh <- nil
+	}
+
 	// Auto-discover OIDC endpoints from issuer if needed
 	if err := cfg.DiscoverEndpoints(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: OIDC endpoint discovery failed: %v\n", err)
@@ -577,10 +627,20 @@ func runOpenCode(args []string) error {
 	} else {
 		// Verify proxy config matches current config (catches stale proxy after update)
 		if proxyConfig, err := proxy.LoadProxyConfig(cfg); err == nil {
+			needsRestart := false
+			reason := ""
+
 			expectedTarget := strings.TrimSuffix(cfg.APIEndpoint, "/v1")
 			if proxyConfig.TargetURL != expectedTarget {
-				fmt.Fprintf(os.Stderr, "Proxy target changed (%s → %s), restarting...\n",
-					proxyConfig.TargetURL, expectedTarget)
+				needsRestart = true
+				reason = fmt.Sprintf("Proxy target changed (%s → %s)", proxyConfig.TargetURL, expectedTarget)
+			} else if proxyConfig.ClientVersion != "" && proxyConfig.ClientVersion != version {
+				needsRestart = true
+				reason = fmt.Sprintf("Proxy version changed (v%s → v%s)", proxyConfig.ClientVersion, version)
+			}
+
+			if needsRestart {
+				fmt.Fprintf(os.Stderr, "%s, restarting...\n", reason)
 				proxy.StopProxy(cfg)
 				time.Sleep(500 * time.Millisecond)
 				newConfig, err := proxy.StartProxy(cfg)
@@ -621,6 +681,68 @@ func runOpenCode(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "Authenticated as %s (expires %s)\n", tokens.Email, tokens.ExpiresAt.Local().Format(time.Kitchen))
 
+	// Wait for version check result (up to 4s — must block launch if below minimum)
+	var versionManifest *versionpkg.Manifest
+	select {
+	case result := <-versionCh:
+		if result != nil {
+			versionManifest = result.manifest
+			if result.info != nil && result.info.BelowMin {
+				// Hard block: do not launch opencode when below minimum version
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintln(os.Stderr, "══════════════════════════════════════════════════")
+				fmt.Fprintln(os.Stderr, " CLIENT UPDATE REQUIRED")
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintf(os.Stderr, " Your version:     v%s\n", result.info.Current)
+				fmt.Fprintf(os.Stderr, " Minimum required: v%s\n", result.info.Latest)
+				fmt.Fprintln(os.Stderr, "══════════════════════════════════════════════════")
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintln(os.Stderr, "Attempting auto-update...")
+				if err := runUpdate(false, false); err != nil {
+					fmt.Fprintf(os.Stderr, "Auto-update failed: %v\n\n", err)
+					if result.info.DownloadURL != "" {
+						fmt.Fprintln(os.Stderr, "Download the latest installer from:")
+						fmt.Fprintf(os.Stderr, "  %s\n", result.info.DownloadURL)
+					} else {
+						fmt.Fprintln(os.Stderr, "Run 'opencode-auth update' to try again.")
+					}
+					os.Exit(1)
+				}
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintln(os.Stderr, "Update complete! Run 'oc' to start.")
+				os.Exit(0)
+			}
+			if result.info != nil && versionpkg.ShouldNotify(result.info) {
+				fmt.Fprintln(os.Stderr, "")
+				if result.info.Critical {
+					fmt.Fprintln(os.Stderr, "*** CRITICAL UPDATE AVAILABLE ***")
+					fmt.Fprintf(os.Stderr, "opencode-auth v%s contains a critical update (current: v%s)\n",
+						result.info.Latest, result.info.Current)
+				} else {
+					fmt.Fprintf(os.Stderr, "A new version of opencode-auth is available: v%s (current: v%s)\n",
+						result.info.Latest, result.info.Current)
+				}
+				if result.info.Message != "" {
+					fmt.Fprintf(os.Stderr, "  %s\n", result.info.Message)
+				}
+				fmt.Fprintln(os.Stderr, "  Update with: opencode-auth update")
+				fmt.Fprintln(os.Stderr, "")
+				// Dismiss non-critical notifications
+				if !result.info.Critical {
+					_ = versionpkg.DismissVersion(result.info.Latest)
+				}
+			}
+		}
+	case <-time.After(4 * time.Second):
+		// Version check timed out — proceed without blocking
+	}
+
+	// Silent config update — apply config patches if config_version changed
+	// This runs after auth is complete (proxy is running, JWT is valid)
+	if versionManifest != nil && versionpkg.ShouldUpdateConfig(versionManifest) {
+		applyConfigPatch(proxyURL, versionManifest.ConfigVersion)
+	}
+
 	// Find the real opencode binary (not a wrapper)
 	opencodePath, err := findRealOpenCode()
 	if err != nil {
@@ -641,6 +763,177 @@ func runOpenCode(args []string) error {
 		return fmt.Errorf("failed to run opencode: %w", err)
 	}
 
+	return nil
+}
+
+// applyConfigPatch fetches and applies config patches from the API.
+// This is silent — no user interaction, only logs on error.
+func applyConfigPatch(proxyURL string, configVersion int) {
+	state := versionpkg.LoadSuppression()
+	patch, err := configpatch.FetchConfigPatch(proxyURL, state.LastConfigVersion)
+	if err != nil || patch == nil {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[config] Warning: failed to fetch config patch: %v\n", err)
+		}
+		return
+	}
+
+	configDir := cfg.ConfigDir
+	fileMap := map[string]string{
+		"config.json":   filepath.Join(configDir, "config.json"),
+		"opencode.json": filepath.Join(configDir, "opencode.json"),
+	}
+
+	for fileName, spec := range patch.Patches {
+		filePath, ok := fileMap[fileName]
+		if !ok {
+			continue
+		}
+
+		// Backup before patching
+		if err := configpatch.Backup(filePath); err != nil {
+			fmt.Fprintf(os.Stderr, "[config] Warning: failed to backup %s: %v\n", fileName, err)
+			continue
+		}
+
+		// Apply patch
+		if err := configpatch.Apply(filePath, spec); err != nil {
+			fmt.Fprintf(os.Stderr, "[config] Warning: failed to patch %s, restoring backup: %v\n", fileName, err)
+			_ = configpatch.Restore(filePath)
+			continue
+		}
+	}
+
+	// Record the config version we applied
+	_ = versionpkg.RecordConfigVersion(configVersion)
+}
+
+func updateCmd() *cobra.Command {
+	var checkOnly bool
+	var configOnly bool
+
+	cmd := &cobra.Command{
+		Use:   "update",
+		Short: "Update opencode-auth to the latest version",
+		Long: `Check for and install the latest version of opencode-auth.
+
+Requires the proxy to be running (start with 'oc' or 'opencode-auth proxy start').
+
+The update is downloaded via a JWT-authenticated presigned URL and installed
+by running install.sh from the downloaded package.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runUpdate(checkOnly, configOnly)
+		},
+	}
+
+	cmd.Flags().BoolVar(&checkOnly, "check-only", false, "Only check if an update is available (don't download)")
+	cmd.Flags().BoolVar(&configOnly, "config-only", false, "Only apply config patches (don't update binary)")
+
+	return cmd
+}
+
+func runUpdate(checkOnly, configOnly bool) error {
+	// Load config
+	openCodeConfig, err := config.LoadOpenCodeConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w\nRun the installer first", err)
+	}
+	applyOpenCodeConfig(cfg, openCodeConfig)
+
+	// Check for updates
+	checkURL := cfg.VersionCheckURL
+	if checkURL == "" {
+		return fmt.Errorf("version check URL not configured. Re-run the installer to update config")
+	}
+
+	info, manifest, err := versionpkg.CheckForUpdate(version, checkURL)
+	if err != nil {
+		return fmt.Errorf("version check failed: %w", err)
+	}
+
+	if checkOnly {
+		if info != nil && info.Available {
+			fmt.Printf("Update available: v%s → v%s\n", info.Current, info.Latest)
+			if info.Critical {
+				fmt.Println("This is a critical update.")
+			}
+			if info.Message != "" {
+				fmt.Printf("  %s\n", info.Message)
+			}
+		} else {
+			fmt.Printf("Already running the latest version (v%s)\n", version)
+		}
+		return nil
+	}
+
+	// Config-only mode: just apply patches
+	if configOnly {
+		if manifest == nil {
+			return fmt.Errorf("could not fetch version manifest")
+		}
+		if !versionpkg.ShouldUpdateConfig(manifest) {
+			fmt.Println("Config is up to date.")
+			return nil
+		}
+
+		// Need proxy for config patch fetch
+		proxyURL, err := proxy.GetProxyURL(cfg)
+		if err != nil {
+			return fmt.Errorf("proxy not running: %w\nStart with 'oc' or 'opencode-auth proxy start'", err)
+		}
+
+		fmt.Println("Applying config patches...")
+		applyConfigPatch(proxyURL, manifest.ConfigVersion)
+		fmt.Println("Config updated successfully.")
+		return nil
+	}
+
+	// Full update: download and install
+	if info == nil || !info.Available {
+		fmt.Printf("Already running the latest version (v%s)\n", version)
+		return nil
+	}
+
+	fmt.Printf("Updating opencode-auth v%s → v%s\n", info.Current, info.Latest)
+
+	// Need proxy for download URL
+	proxyURL, err := proxy.GetProxyURL(cfg)
+	if err != nil {
+		return fmt.Errorf("proxy not running: %w\nStart with 'oc' or 'opencode-auth proxy start'", err)
+	}
+
+	// Get presigned download URL
+	fmt.Fprintf(os.Stderr, "Fetching download URL...\n")
+	dlResp, err := updatepkg.GetDownloadURL(proxyURL)
+	if err != nil {
+		return fmt.Errorf("failed to get download URL: %w", err)
+	}
+
+	// Download the installer zip
+	fmt.Fprintf(os.Stderr, "Downloading installer...\n")
+	zipPath, err := updatepkg.DownloadZip(dlResp.DownloadURL)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer os.Remove(zipPath)
+
+	// Extract and run install.sh
+	// Note: install.sh stops the proxy during binary replacement, which will
+	// briefly disconnect any active oc session. We restart the proxy afterward
+	// so the session can reconnect automatically.
+	fmt.Fprintf(os.Stderr, "Installing update...\n")
+	if err := updatepkg.ExtractAndInstall(zipPath); err != nil {
+		return fmt.Errorf("installation failed: %w", err)
+	}
+
+	// Restart the proxy with the new binary so active sessions can reconnect.
+	fmt.Fprintf(os.Stderr, "Restarting proxy...\n")
+	if _, err := proxy.StartProxy(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not restart proxy: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Run 'oc' to restart it manually.\n")
+	}
+
+	fmt.Fprintf(os.Stderr, "\nUpdate complete! Restart your shell or run 'oc' to use v%s.\n", info.Latest)
 	return nil
 }
 

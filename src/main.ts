@@ -101,6 +101,7 @@ const apiStack = new ApiStack(app, `OpenCodeApi-${environment}`, {
   hostedZoneId,
   hostedZoneName,
   domainName: apiDomain,
+  webDomain,
 });
 
 // ============================================

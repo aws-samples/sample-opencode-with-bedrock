@@ -1,5 +1,6 @@
 *.js
 !jest.config.js
+!services/share/viewer/*.js
 *.d.ts
 node_modules
 .vscode/

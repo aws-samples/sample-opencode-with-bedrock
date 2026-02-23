@@ -97,8 +97,9 @@ test('DistributionStack creates a Lambda target group', () => {
   });
 });
 
-test('DistributionStack creates 1 listener rule with OIDC auth', () => {
-  template.resourceCountIs('AWS::ElasticLoadBalancingV2::ListenerRule', 1);
+test('DistributionStack creates 2 listener rules with OIDC auth', () => {
+  // Rules: unauthenticated /version.json, OIDC-authenticated catch-all
+  template.resourceCountIs('AWS::ElasticLoadBalancingV2::ListenerRule', 2);
 });
 
 test('DistributionStack creates 1 security group', () => {

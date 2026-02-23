@@ -46,7 +46,5 @@ venv/
 # Local feature tracking (not committed)
 docs/features/
 
-# Share service build artifacts
-services/share/lambda/node_modules/
-services/share/lambda/dist/
-services/share/lambda/*.zip
+# Architecture Decision Records (local reference)
+docs/adr/

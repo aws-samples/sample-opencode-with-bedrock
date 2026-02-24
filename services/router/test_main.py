@@ -87,6 +87,23 @@ class TestModelMapping:
         model_map = main.DEFAULT_MODEL_MAP
         assert "claude-opus" in model_map
         assert "claude-sonnet" in model_map
+        # Verify new Mantle models are in the map
+        assert "deepseek-v3" in model_map
+        assert model_map["deepseek-v3"] == "deepseek.v3.2"
+        assert "minimax-m2" in model_map
+        assert model_map["minimax-m2"] == "minimax.minimax-m2.1"
+        assert "glm-4" in model_map
+        assert model_map["glm-4"] == "zai.glm-4.7"
+        assert "glm-4-flash" in model_map
+        assert model_map["glm-4-flash"] == "zai.glm-4.7-flash"
+        assert "qwen3-coder" in model_map
+        assert model_map["qwen3-coder"] == "qwen.qwen3-coder-next"
+        # Verify bedrock/ prefixed variants exist
+        assert "bedrock/deepseek-v3" in model_map
+        assert "bedrock/minimax-m2" in model_map
+        assert "bedrock/glm-4" in model_map
+        assert "bedrock/glm-4-flash" in model_map
+        assert "bedrock/qwen3-coder" in model_map
 
     def test_is_anthropic_model(self):
         import main
@@ -95,6 +112,12 @@ class TestModelMapping:
         assert main.is_anthropic_model("anthropic.claude-v2") is True
         assert main.is_anthropic_model("moonshotai.kimi-k2.5") is False
         assert main.is_anthropic_model("meta.llama-3") is False
+        # New Mantle models should NOT be Anthropic
+        assert main.is_anthropic_model("deepseek.v3.2") is False
+        assert main.is_anthropic_model("minimax.minimax-m2.1") is False
+        assert main.is_anthropic_model("zai.glm-4.7") is False
+        assert main.is_anthropic_model("zai.glm-4.7-flash") is False
+        assert main.is_anthropic_model("qwen.qwen3-coder-next") is False
 
 
 class TestStopReasonMapping:

@@ -336,10 +336,15 @@ export class ApiStack extends cdk.Stack {
         'bedrock:InvokeModelWithResponseStream',
       ],
       resources: [
-        'arn:aws:bedrock:*::foundation-model/moonshotai.*',
-        `arn:aws:bedrock:*:${this.account}:inference-profile/us.moonshotai.*`,
         'arn:aws:bedrock:*::foundation-model/anthropic.*',
         `arn:aws:bedrock:*:${this.account}:inference-profile/us.anthropic.*`,
+        'arn:aws:bedrock:*::foundation-model/moonshotai.*',
+        `arn:aws:bedrock:*:${this.account}:inference-profile/us.moonshotai.*`,
+        'arn:aws:bedrock:*::foundation-model/deepseek.*',
+        'arn:aws:bedrock:*::foundation-model/minimax.*',
+        'arn:aws:bedrock:*::foundation-model/zai.*',
+        'arn:aws:bedrock:*::foundation-model/qwen.*',
+        'arn:aws:bedrock:*::foundation-model/moonshot.*',
       ],
     }));
 
@@ -661,12 +666,17 @@ export class ApiStack extends cdk.Stack {
     NagSuppressions.addResourceSuppressions(taskRole, [
       {
         id: 'AwsSolutions-IAM5',
-        reason: 'Wildcard ARNs required for cross-region Bedrock inference profiles (us.anthropic.*, us.moonshotai.*) and foundation models',
+        reason: 'Wildcard ARNs required for cross-region Bedrock inference profiles (us.anthropic.*, us.moonshotai.*) and foundation models (deepseek.*, minimax.*, zai.*, qwen.*, moonshot.*)',
         appliesTo: [
           `Resource::arn:aws:bedrock:*:${this.account}:inference-profile/us.anthropic.*`,
           `Resource::arn:aws:bedrock:*:${this.account}:inference-profile/us.moonshotai.*`,
           'Resource::arn:aws:bedrock:*::foundation-model/anthropic.*',
           'Resource::arn:aws:bedrock:*::foundation-model/moonshotai.*',
+          'Resource::arn:aws:bedrock:*::foundation-model/deepseek.*',
+          'Resource::arn:aws:bedrock:*::foundation-model/minimax.*',
+          'Resource::arn:aws:bedrock:*::foundation-model/zai.*',
+          'Resource::arn:aws:bedrock:*::foundation-model/qwen.*',
+          'Resource::arn:aws:bedrock:*::foundation-model/moonshot.*',
           `Resource::arn:aws:bedrock-mantle:*:${this.account}:project/default`,
           'Resource::*',
         ],

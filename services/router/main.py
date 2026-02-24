@@ -186,15 +186,31 @@ async def version_gate_middleware(request, handler):
 
 # Model mapping — override via BEDROCK_MODEL_MAP env var (JSON string)
 DEFAULT_MODEL_MAP = {
-    "kimi-k25": "moonshotai.kimi-k2.5",
-    "bedrock/kimi-k25": "moonshotai.kimi-k2.5",
-    "bedrock/kimi-k2-thinking": "moonshotai.kimi-k2-thinking",
+    # Anthropic (Converse API path)
     "claude-opus": "us.anthropic.claude-opus-4-6-v1",
     "bedrock/claude-opus": "us.anthropic.claude-opus-4-6-v1",
     "claude-sonnet": "us.anthropic.claude-sonnet-4-6",
     "bedrock/claude-sonnet": "us.anthropic.claude-sonnet-4-6",
     "claude-sonnet-45": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "bedrock/claude-sonnet-45": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    # Moonshot AI (Mantle path)
+    "kimi-k25": "moonshotai.kimi-k2.5",
+    "bedrock/kimi-k25": "moonshotai.kimi-k2.5",
+    "bedrock/kimi-k2-thinking": "moonshotai.kimi-k2-thinking",
+    # DeepSeek (Mantle path)
+    "deepseek-v3": "deepseek.v3.2",
+    "bedrock/deepseek-v3": "deepseek.v3.2",
+    # MiniMax (Mantle path)
+    "minimax-m2": "minimax.minimax-m2.1",
+    "bedrock/minimax-m2": "minimax.minimax-m2.1",
+    # Z AI / Zhipu (Mantle path)
+    "glm-4": "zai.glm-4.7",
+    "bedrock/glm-4": "zai.glm-4.7",
+    "glm-4-flash": "zai.glm-4.7-flash",
+    "bedrock/glm-4-flash": "zai.glm-4.7-flash",
+    # Qwen / Alibaba (Mantle path)
+    "qwen3-coder": "qwen.qwen3-coder-next",
+    "bedrock/qwen3-coder": "qwen.qwen3-coder-next",
 }
 
 _model_map = None

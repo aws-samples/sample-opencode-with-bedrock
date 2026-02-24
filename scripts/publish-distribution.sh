@@ -260,7 +260,7 @@ cp "$ASSETS_DIR/install.sh" "$PACKAGE_DIR/"
 echo "  Copying config files..."
 if [[ -n "$CLI_CLIENT_ID" ]] && [[ "$CLI_CLIENT_ID" != "None" ]] && [[ -n "$API_DOMAIN" ]] && [[ "$API_DOMAIN" != "None" ]]; then
     echo "  Injecting CLI Client ID, API Domain, and OIDC Issuer"
-    sed -e "s|{{CLIENT_ID}}|$CLI_CLIENT_ID|g" -e "s|{{API_DOMAIN}}|$API_DOMAIN|g" -e "s|{{ISSUER}}|$OIDC_ISSUER|g" "$ASSETS_DIR/opencode-config.json" > "$PACKAGE_DIR/opencode-config.json"
+    sed -e "s|{{CLIENT_ID}}|$CLI_CLIENT_ID|g" -e "s|{{API_DOMAIN}}|$API_DOMAIN|g" -e "s|{{ISSUER}}|$OIDC_ISSUER|g" -e "s|{{WEB_DOMAIN}}|$WEB_DOMAIN|g" "$ASSETS_DIR/opencode-config.json" > "$PACKAGE_DIR/opencode-config.json"
 else
     print_warning "Could not fetch values from CloudFormation, using template config"
     cp "$ASSETS_DIR/opencode-config.json" "$PACKAGE_DIR/"
@@ -313,8 +313,85 @@ for binary in "$ASSETS_DIR"/opencode-auth-*; do
         --content-type "application/octet-stream"
 done
 
-# Step 3: Generate and upload version.json manifest
-print_info "Step 3: Publishing version manifest..."
+# Step 3: Generate and upload config-patch.json from opencode.json
+print_info "Step 3: Generating config-patch.json from opencode.json..."
+
+# Determine config_version: use --config-version if set, otherwise read from
+# existing config-patch.json on S3 and auto-increment
+EXISTING_PATCH=$(aws s3 cp "s3://$BUCKET/downloads/config-patch.json" - \
+    --profile "$PROFILE" \
+    --region "$REGION" 2>/dev/null || echo "")
+
+if [[ -z "$CONFIG_VERSION" ]]; then
+    if [[ -n "$EXISTING_PATCH" ]]; then
+        PREV_CONFIG_VERSION=$(echo "$EXISTING_PATCH" | python3 -c "import sys,json; print(json.load(sys.stdin).get('config_version',0))" 2>/dev/null || echo "0")
+    else
+        PREV_CONFIG_VERSION="0"
+    fi
+    CONFIG_VERSION=$((PREV_CONFIG_VERSION + 1))
+    echo "  Auto-incremented config_version: $PREV_CONFIG_VERSION -> $CONFIG_VERSION"
+fi
+
+# Build config-patch.json from opencode.json
+# This converts each model entry into a set_deep operation, and also patches
+# config.json with version_check_url for existing installs that lack it.
+CONFIG_PATCH_JSON=$(python3 -c "
+import json, sys
+
+# Read the distribution opencode.json
+with open('$ASSETS_DIR/opencode.json') as f:
+    oc = json.load(f)
+
+# Build set_deep entries from opencode.json model definitions
+set_deep = {}
+provider = oc.get('provider', {})
+for provider_name, provider_config in provider.items():
+    models = provider_config.get('models', {})
+    for model_name, model_def in models.items():
+        set_deep[f'provider.{provider_name}.models.{model_name}'] = model_def
+    # Also set provider options (e.g. baseURL)
+    options = provider_config.get('options')
+    if options:
+        set_deep[f'provider.{provider_name}.options'] = options
+
+# Build the config patch
+patch = {
+    'config_version': int('$CONFIG_VERSION'),
+    'patches': {
+        'config.json': {
+            'set': {}
+        },
+        'opencode.json': {
+            'set_deep': set_deep
+        }
+    }
+}
+
+# Add config.json patches for version_check_url and connection params
+config_set = patch['patches']['config.json']['set']
+if '$CLI_CLIENT_ID' and '$CLI_CLIENT_ID' != 'None':
+    config_set['client_id'] = '$CLI_CLIENT_ID'
+if '$API_DOMAIN' and '$API_DOMAIN' != 'None':
+    config_set['api_endpoint'] = 'https://$API_DOMAIN/v1'
+if '$OIDC_ISSUER' and '$OIDC_ISSUER' != 'None':
+    config_set['issuer'] = '$OIDC_ISSUER'
+if '$WEB_DOMAIN' and '$WEB_DOMAIN' != 'None':
+    config_set['version_check_url'] = 'https://$WEB_DOMAIN/version.json'
+
+print(json.dumps(patch, indent=2))
+")
+
+echo "$CONFIG_PATCH_JSON" | aws s3 cp - "s3://$BUCKET/downloads/config-patch.json" \
+    --profile "$PROFILE" \
+    --region "$REGION" \
+    --content-type "application/json"
+
+MODEL_COUNT=$(echo "$CONFIG_PATCH_JSON" | python3 -c "import sys,json; p=json.load(sys.stdin); print(len([k for k in p['patches']['opencode.json']['set_deep'] if k.startswith('provider.') and '.models.' in k]))" 2>/dev/null || echo "?")
+echo "  config-patch.json uploaded (config_version: $CONFIG_VERSION, models: $MODEL_COUNT)"
+echo ""
+
+# Step 4: Generate and upload version.json manifest
+print_info "Step 4: Publishing version manifest..."
 
 if [[ "$VERSION" != "dev" ]]; then
     # Determine minimum version: use --minimum-version if set, otherwise try to read
@@ -331,15 +408,7 @@ if [[ "$VERSION" != "dev" ]]; then
         fi
     fi
 
-    # Determine config_version: use --config-version if set, otherwise read from
-    # existing manifest and keep the same value
-    if [[ -z "$CONFIG_VERSION" ]]; then
-        if [[ -n "$EXISTING_MANIFEST" ]]; then
-            CONFIG_VERSION=$(echo "$EXISTING_MANIFEST" | python3 -c "import sys,json; print(json.load(sys.stdin).get('config_version',1))" 2>/dev/null || echo "1")
-        else
-            CONFIG_VERSION="1"
-        fi
-    fi
+    # CONFIG_VERSION is already determined in Step 3 (config-patch generation)
 
     RELEASE_DATE=$(date -u +%Y-%m-%d)
 
@@ -380,7 +449,26 @@ print(json.dumps(manifest, indent=2))
         echo "    message:        $MESSAGE"
     fi
 else
-    print_warning "  Skipping version.json (version is 'dev')"
+    # Even for dev, update config_version in existing version.json so config patches get picked up
+    EXISTING_MANIFEST=$(aws s3 cp "s3://$BUCKET/downloads/version.json" - \
+        --profile "$PROFILE" \
+        --region "$REGION" 2>/dev/null || echo "")
+    if [[ -n "$EXISTING_MANIFEST" ]]; then
+        UPDATED_MANIFEST=$(echo "$EXISTING_MANIFEST" | python3 -c "
+import sys, json
+m = json.load(sys.stdin)
+m['config_version'] = int('$CONFIG_VERSION')
+print(json.dumps(m, indent=2))
+")
+        echo "$UPDATED_MANIFEST" | aws s3 cp - "s3://$BUCKET/downloads/version.json" \
+            --profile "$PROFILE" \
+            --region "$REGION" \
+            --content-type "application/json" \
+            --cache-control "max-age=300"
+        echo "  Updated config_version in version.json to $CONFIG_VERSION (version remains unchanged)"
+    else
+        print_warning "  Skipping version.json update (no existing manifest found)"
+    fi
 fi
 
 echo ""

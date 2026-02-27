@@ -310,14 +310,14 @@ curl -X POST https://oc.example.com/v1/chat/completions \
 | Model | Alias | Context Window | Features |
 |-------|-------|----------------|----------|
 | **Kimi K2.5** | `kimi-k25` | 256K tokens | Text, Image, Tool calling |
-| **Claude Opus 4.6** | `claude-opus` | 200K tokens | Text, Image, Reasoning, Tool calling |
-| **Claude Sonnet 4.5** | `claude-sonnet` | 200K tokens | Text, Image, Reasoning, Tool calling |
+| **Claude Opus 4.6** | `claude-opus` | 200K tokens | Text, Image, Reasoning, Tool calling, Prompt caching |
+| **Claude Sonnet 4.5** | `claude-sonnet` | 200K tokens | Text, Image, Reasoning, Tool calling, Prompt caching |
 
 ### Model Routing
 
 The router automatically detects the target model and routes to the appropriate backend:
 
-- **Anthropic models** (Claude Opus/Sonnet): Use Bedrock Converse API via boto3
+- **Anthropic models** (Claude Opus/Sonnet): Use Bedrock Converse API via boto3 with automatic [prompt caching](docs/ROUTER.md#prompt-caching)
 - **Other models** (Kimi): Use Bedrock Mantle proxy
 
 Both routes return OpenAI-compatible responses.

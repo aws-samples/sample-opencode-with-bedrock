@@ -228,3 +228,227 @@ class TestConverseResponseTranslation:
         assert result["usage"]["prompt_tokens"] == 0
         assert result["usage"]["completion_tokens"] == 0
         assert result["usage"]["total_tokens"] == 0
+
+
+class TestPromptCaching:
+    """Verify prompt caching cachePoint injection and cache usage metrics."""
+
+    def test_system_blocks_get_cache_point_when_enabled(self):
+        """translate_openai_to_converse should append cachePoint to system blocks."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hello"},
+            ],
+        }
+        params = main.translate_openai_to_converse(body, enable_cache=True)
+        system = params["system"]
+        assert system[-1] == {"cachePoint": {"type": "default"}}
+        assert system[0] == {"text": "You are a helpful assistant."}
+
+    def test_system_blocks_no_cache_point_when_disabled(self):
+        """translate_openai_to_converse should NOT add cachePoint when disabled."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hello"},
+            ],
+        }
+        params = main.translate_openai_to_converse(body, enable_cache=False)
+        system = params["system"]
+        assert len(system) == 1
+        assert system[0] == {"text": "You are a helpful assistant."}
+
+    def test_tools_get_cache_point_when_enabled(self):
+        """translate_openai_to_converse should append cachePoint to tools list."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get the weather",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        }
+        params = main.translate_openai_to_converse(body, enable_cache=True)
+        tools = params["toolConfig"]["tools"]
+        assert tools[-1] == {"cachePoint": {"type": "default"}}
+        assert "toolSpec" in tools[0]
+
+    def test_tools_no_cache_point_when_disabled(self):
+        """translate_openai_to_converse should NOT add cachePoint to tools when disabled."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get the weather",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        }
+        params = main.translate_openai_to_converse(body, enable_cache=False)
+        tools = params["toolConfig"]["tools"]
+        assert len(tools) == 1
+        assert "toolSpec" in tools[0]
+
+    def test_synthesized_tools_get_cache_point_when_enabled(self):
+        """Synthesized toolConfig from history should also get cachePoint."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "sunny",
+                },
+                {"role": "user", "content": "Thanks"},
+            ],
+        }
+        params = main.translate_openai_to_converse(body, enable_cache=True)
+        tools = params["toolConfig"]["tools"]
+        assert tools[-1] == {"cachePoint": {"type": "default"}}
+
+    def test_cache_control_passthrough_in_content(self):
+        """Client cache_control hints should be translated to cachePoint blocks."""
+        import main
+
+        content = [
+            {
+                "type": "text",
+                "text": "Long context here...",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": "Question?"},
+        ]
+        blocks = main._translate_content(content)
+        # Should be: text, cachePoint, text
+        assert len(blocks) == 3
+        assert blocks[0] == {"text": "Long context here..."}
+        assert blocks[1] == {"cachePoint": {"type": "default"}}
+        assert blocks[2] == {"text": "Question?"}
+
+    def test_no_cache_control_no_extra_blocks(self):
+        """Without cache_control, no cachePoint blocks should be injected in content."""
+        import main
+
+        content = [
+            {"type": "text", "text": "Hello"},
+            {"type": "text", "text": "World"},
+        ]
+        blocks = main._translate_content(content)
+        assert len(blocks) == 2
+        assert blocks[0] == {"text": "Hello"}
+        assert blocks[1] == {"text": "World"}
+
+
+class TestBuildUsage:
+    """Verify _build_usage extracts cache metrics correctly."""
+
+    def test_build_usage_with_cache_metrics(self):
+        """_build_usage should include cache fields when present."""
+        import main
+
+        usage = {
+            "inputTokens": 100,
+            "outputTokens": 50,
+            "cacheReadInputTokens": 80,
+            "cacheWriteInputTokens": 20,
+        }
+        result = main._build_usage(usage)
+        assert result["prompt_tokens"] == 100
+        assert result["completion_tokens"] == 50
+        assert result["total_tokens"] == 150
+        assert result["cache_read_input_tokens"] == 80
+        assert result["cache_creation_input_tokens"] == 20
+        assert result["prompt_tokens_details"]["cached_tokens"] == 80
+
+    def test_build_usage_without_cache_metrics(self):
+        """_build_usage should omit cache fields when not present."""
+        import main
+
+        usage = {
+            "inputTokens": 42,
+            "outputTokens": 17,
+        }
+        result = main._build_usage(usage)
+        assert result["prompt_tokens"] == 42
+        assert result["completion_tokens"] == 17
+        assert result["total_tokens"] == 59
+        assert "cache_read_input_tokens" not in result
+        assert "cache_creation_input_tokens" not in result
+        assert "prompt_tokens_details" not in result
+
+    def test_build_usage_zero_cache_omits_fields(self):
+        """_build_usage with zero cache values should omit cache fields."""
+        import main
+
+        usage = {
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+        }
+        result = main._build_usage(usage)
+        assert "cache_read_input_tokens" not in result
+        assert "prompt_tokens_details" not in result
+
+    def test_converse_response_with_cache_usage(self):
+        """translate_converse_to_openai should surface cache metrics in usage."""
+        import main
+
+        converse_response = {
+            "output": {
+                "message": {
+                    "content": [{"text": "Hello"}],
+                    "role": "assistant",
+                }
+            },
+            "usage": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 80,
+                "cacheWriteInputTokens": 0,
+            },
+            "stopReason": "end_turn",
+        }
+        result = main.translate_converse_to_openai(
+            converse_response, "test-model", "req-cache"
+        )
+        assert result["usage"]["cache_read_input_tokens"] == 80
+        assert result["usage"]["prompt_tokens_details"]["cached_tokens"] == 80

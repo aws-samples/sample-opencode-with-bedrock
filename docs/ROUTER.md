@@ -334,6 +334,27 @@ When the conversation history contains `toolUse` or `toolResult` blocks but the 
 | `content_filtered` | `content_filter` |
 | _(unknown)_ | `stop` |
 
+### Prompt Caching
+
+The router automatically enables [Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html) for all Anthropic model requests. This reduces latency and input token costs for multi-turn conversations by caching repeated content prefixes.
+
+**How it works:**
+
+- `cachePoint` blocks are appended to the end of system prompt blocks and tool definition arrays in `translate_openai_to_converse()`
+- No configuration required -- caching is transparent and enabled by default for Anthropic models
+- If the cached prefix is under the model's minimum token threshold (typically 1,024 tokens), Bedrock silently skips caching and inference proceeds normally
+- Client-provided `cache_control` hints (Anthropic native format) are translated to Converse API `cachePoint` blocks
+
+**Cache usage metrics** are surfaced in both streaming and non-streaming responses:
+
+| Response Field | Description |
+|---------------|-------------|
+| `usage.prompt_tokens_details.cached_tokens` | Tokens read from cache |
+| `usage.cache_read_input_tokens` | Tokens read from cache |
+| `usage.cache_creation_input_tokens` | Tokens written to cache |
+
+Structured logs include `cache_read_tokens` and `cache_write_tokens` fields for observability.
+
 ---
 
 ## Streaming SSE Translation

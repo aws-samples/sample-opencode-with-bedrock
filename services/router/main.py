@@ -271,7 +271,7 @@ def get_bedrock_client():
     return _bedrock_client
 
 
-def translate_openai_to_converse(body):
+def translate_openai_to_converse(body, enable_cache=False):
     """Convert an OpenAI chat-completion request body to Bedrock Converse API params."""
     messages = body.get("messages", [])
 
@@ -355,6 +355,8 @@ def translate_openai_to_converse(body):
     }
 
     if system_blocks:
+        if enable_cache:
+            system_blocks.append({"cachePoint": {"type": "default"}})
         params["system"] = system_blocks
 
     # Inference config
@@ -386,6 +388,8 @@ def translate_openai_to_converse(body):
                 }
                 tools.append({"toolSpec": tool_spec})
         if tools:
+            if enable_cache:
+                tools.append({"cachePoint": {"type": "default"}})
             params["toolConfig"] = {"tools": tools}
 
     # Converse API requires toolConfig whenever toolUse/toolResult blocks
@@ -400,19 +404,20 @@ def translate_openai_to_converse(body):
                 if "toolResult" in block:
                     seen_tool_names.discard("")  # just in case
         if seen_tool_names:
-            params["toolConfig"] = {
-                "tools": [
-                    {
-                        "toolSpec": {
-                            "name": name,
-                            "description": "Tool from conversation history",
-                            "inputSchema": {"json": {"type": "object"}},
-                        }
+            synth_tools = [
+                {
+                    "toolSpec": {
+                        "name": name,
+                        "description": "Tool from conversation history",
+                        "inputSchema": {"json": {"type": "object"}},
                     }
-                    for name in sorted(seen_tool_names)
-                    if name
-                ]
-            }
+                }
+                for name in sorted(seen_tool_names)
+                if name
+            ]
+            if enable_cache:
+                synth_tools.append({"cachePoint": {"type": "default"}})
+            params["toolConfig"] = {"tools": synth_tools}
 
     # Extended thinking / reasoning via additionalModelRequestFields
     additional_fields = {}
@@ -445,6 +450,10 @@ def _translate_content(content):
                 part_type = part.get("type", "")
                 if part_type == "text":
                     blocks.append({"text": part["text"]})
+                    # Pass through client cache_control hints (Anthropic native format)
+                    # by translating to Converse API cachePoint blocks
+                    if part.get("cache_control"):
+                        blocks.append({"cachePoint": {"type": "default"}})
                 elif part_type == "image_url":
                     url_data = part.get("image_url", {}).get("url", "")
                     if url_data.startswith("data:"):
@@ -469,6 +478,26 @@ def _translate_content(content):
         return blocks if blocks else [{"text": ""}]
 
     return [{"text": str(content)}] if content else [{"text": ""}]
+
+
+def _build_usage(usage):
+    """Build an OpenAI-compatible usage dict from Converse API usage, including cache metrics."""
+    prompt_tok = usage.get("inputTokens", 0)
+    completion_tok = usage.get("outputTokens", 0)
+    usage_obj = {
+        "prompt_tokens": prompt_tok,
+        "completion_tokens": completion_tok,
+        "total_tokens": prompt_tok + completion_tok,
+    }
+    cache_read = usage.get("cacheReadInputTokens", 0)
+    cache_write = usage.get("cacheWriteInputTokens", 0)
+    if cache_read or cache_write:
+        usage_obj["prompt_tokens_details"] = {
+            "cached_tokens": cache_read,
+        }
+        usage_obj["cache_read_input_tokens"] = cache_read
+        usage_obj["cache_creation_input_tokens"] = cache_write
+    return usage_obj
 
 
 def translate_converse_to_openai(response, model, request_id):
@@ -531,11 +560,7 @@ def translate_converse_to_openai(response, model, request_id):
                 "finish_reason": finish_reason,
             }
         ],
-        "usage": {
-            "prompt_tokens": usage.get("inputTokens", 0),
-            "completion_tokens": usage.get("outputTokens", 0),
-            "total_tokens": usage.get("inputTokens", 0) + usage.get("outputTokens", 0),
-        },
+        "usage": _build_usage(usage),
     }
 
 
@@ -555,7 +580,7 @@ async def handle_anthropic_non_streaming(body, request_id):
     """Call Converse API (non-streaming) in an executor thread."""
     loop = asyncio.get_event_loop()
     model = body["model"]
-    params = translate_openai_to_converse(body)
+    params = translate_openai_to_converse(body, enable_cache=True)
 
     log.info(
         "Calling Converse API",
@@ -566,6 +591,20 @@ async def handle_anthropic_non_streaming(body, request_id):
         client = get_bedrock_client()
         response = await loop.run_in_executor(
             _executor, lambda: client.converse(**params)
+        )
+        response_usage = response.get("usage", {})
+        cache_read = response_usage.get("cacheReadInputTokens", 0)
+        cache_write = response_usage.get("cacheWriteInputTokens", 0)
+        log.info(
+            "Converse API response",
+            extra={
+                "request_id": request_id,
+                "model": model,
+                "input_tokens": response_usage.get("inputTokens", 0),
+                "output_tokens": response_usage.get("outputTokens", 0),
+                "cache_read_tokens": cache_read,
+                "cache_write_tokens": cache_write,
+            },
         )
         result = translate_converse_to_openai(response, model, request_id)
         return web.json_response(result, headers={"X-Request-ID": request_id})
@@ -591,7 +630,7 @@ async def handle_anthropic_non_streaming(body, request_id):
 async def handle_anthropic_streaming(body, request_id, request):
     """Call ConverseStream API, translate events to OpenAI SSE format."""
     model = body["model"]
-    params = translate_openai_to_converse(body)
+    params = translate_openai_to_converse(body, enable_cache=True)
 
     log.info(
         "Calling ConverseStream API",
@@ -706,28 +745,26 @@ async def handle_anthropic_streaming(body, request_id, request):
                 # Stream complete — extract and emit usage info
                 meta_usage = event["metadata"].get("usage", {})
                 if meta_usage:
-                    prompt_tok = meta_usage.get("inputTokens", 0)
-                    completion_tok = meta_usage.get("outputTokens", 0)
-                    total_tok = prompt_tok + completion_tok
+                    usage_data = _build_usage(meta_usage)
                     usage_chunk = _make_sse_chunk(
                         request_id,
                         model,
                         delta={},
-                        usage={
-                            "prompt_tokens": prompt_tok,
-                            "completion_tokens": completion_tok,
-                            "total_tokens": total_tok,
-                        },
+                        usage=usage_data,
                     )
                     await _write_sse(response, json.dumps(usage_chunk))
+                    cache_read = meta_usage.get("cacheReadInputTokens", 0)
+                    cache_write = meta_usage.get("cacheWriteInputTokens", 0)
                     log.info(
                         "Stream usage emitted",
                         extra={
                             "request_id": request_id,
                             "model": model,
-                            "prompt_tokens": prompt_tok,
-                            "completion_tokens": completion_tok,
-                            "total_tokens": total_tok,
+                            "prompt_tokens": usage_data["prompt_tokens"],
+                            "completion_tokens": usage_data["completion_tokens"],
+                            "total_tokens": usage_data["total_tokens"],
+                            "cache_read_tokens": cache_read,
+                            "cache_write_tokens": cache_write,
                         },
                     )
 

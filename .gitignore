@@ -48,3 +48,6 @@ docs/features/
 
 # Architecture Decision Records (local reference)
 docs/adr/
+
+# Agent instructions (contains internal context)
+AGENTS.md

@@ -765,6 +765,8 @@ async def handle_anthropic_streaming(body, request_id, request):
                             "total_tokens": usage_data["total_tokens"],
                             "cache_read_tokens": cache_read,
                             "cache_write_tokens": cache_write,
+                            "user_sub": request.get("user_sub", ""),
+                            "user_email": request.get("user_email", ""),
                         },
                     )
 
@@ -1400,6 +1402,9 @@ async def request_logging_middleware(request, handler):
             "method": request.method,
             "path": request.path,
             "user_agent": request.headers.get("User-Agent", "unknown"),
+            "auth_source": request.get("auth_source", ""),
+            "user_sub": request.get("user_sub", ""),
+            "user_email": request.get("user_email", ""),
         },
     )
 
@@ -1415,6 +1420,9 @@ async def request_logging_middleware(request, handler):
                 "path": request.path,
                 "status": response.status,
                 "duration_ms": duration_ms,
+                "auth_source": request.get("auth_source", ""),
+                "user_sub": request.get("user_sub", ""),
+                "user_email": request.get("user_email", ""),
             },
         )
 
@@ -1432,6 +1440,9 @@ async def request_logging_middleware(request, handler):
                 "path": request.path,
                 "error": str(e),
                 "duration_ms": duration_ms,
+                "auth_source": request.get("auth_source", ""),
+                "user_sub": request.get("user_sub", ""),
+                "user_email": request.get("user_email", ""),
             },
         )
         raise
@@ -1515,6 +1526,8 @@ async def chat_completions(request):
             "request_id": request_id,
             "model": body.get("model"),
             "stream": is_stream,
+            "user_sub": request.get("user_sub", ""),
+            "user_email": request.get("user_email", ""),
         },
     )
 
@@ -1535,6 +1548,8 @@ async def chat_completions(request):
                                 "status": resp.status,
                                 "has_usage": mantle_usage is not None,
                                 "usage": mantle_usage,
+                                "user_sub": request.get("user_sub", ""),
+                                "user_email": request.get("user_email", ""),
                             },
                         )
                     except (json.JSONDecodeError, Exception):
@@ -1583,6 +1598,8 @@ async def chat_completions(request):
                                 "request_id": request_id,
                                 "has_usage": mantle_stream_usage is not None,
                                 "usage": mantle_stream_usage,
+                                "user_sub": request.get("user_sub", ""),
+                                "user_email": request.get("user_email", ""),
                             },
                         )
                     except (json.JSONDecodeError, Exception):

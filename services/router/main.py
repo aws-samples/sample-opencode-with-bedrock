@@ -348,6 +348,20 @@ def translate_openai_to_converse(body, enable_cache=False):
 
         converse_messages.append({"role": role, "content": converse_content})
 
+    # Inject a cachePoint on the second-to-last user turn so the entire
+    # conversation prefix is cached between requests.  Anthropic allows up
+    # to 4 breakpoints; we use: system, tools, and this turn-level one.
+    if enable_cache and len(converse_messages) >= 3:
+        # Walk backwards to find the last user message that is NOT the
+        # final message (the final user message is the new turn — we want
+        # to cache everything *before* it so subsequent requests benefit).
+        for i in range(len(converse_messages) - 2, -1, -1):
+            if converse_messages[i]["role"] == "user":
+                converse_messages[i]["content"].append(
+                    {"cachePoint": {"type": "default"}}
+                )
+                break
+
     # Build params
     params = {
         "modelId": body["model"],

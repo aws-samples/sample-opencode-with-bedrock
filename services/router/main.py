@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 import aiohttp
 import boto3
 from aiohttp import web
+from aiohttp.client_exceptions import ClientConnectionResetError
 from aws_bedrock_token_generator import provide_token
 from botocore.config import Config as BotoConfig
 
@@ -661,6 +662,14 @@ async def handle_anthropic_streaming(body, request_id, request):
     )
     await response.prepare(request)
 
+    # Send SSE keepalive comments while waiting for Bedrock to respond.
+    # Corporate proxies and client HTTP stacks can kill connections that
+    # appear idle during the (potentially long) time-to-first-token,
+    # especially with large-context Opus requests.
+    keepalive_task = asyncio.create_task(
+        _sse_keepalive(response, interval=15, request_id=request_id)
+    )
+
     try:
         loop = asyncio.get_event_loop()
         client = get_bedrock_client()
@@ -669,6 +678,7 @@ async def handle_anthropic_streaming(body, request_id, request):
         )
         stream = stream_response.get("stream")
         if not stream:
+            keepalive_task.cancel()
             await _write_sse(response, "[DONE]")
             await response.write_eof()
             return response
@@ -676,6 +686,9 @@ async def handle_anthropic_streaming(body, request_id, request):
         tool_idx = -1
 
         async for event in _iter_stream_events(stream):
+            # Cancel keepalive after first real event arrives
+            if not keepalive_task.cancelled():
+                keepalive_task.cancel()
             if "messageStart" in event:
                 chunk = _make_sse_chunk(
                     request_id,
@@ -788,7 +801,18 @@ async def handle_anthropic_streaming(body, request_id, request):
         await response.write_eof()
         return response
 
+    except (ConnectionResetError, ClientConnectionResetError) as e:
+        # Client disconnected — normal when users cancel or proxies time out.
+        # Log at WARNING, not ERROR, since this is not a server fault.
+        keepalive_task.cancel()
+        log.warning(
+            "Client disconnected during stream",
+            extra={"request_id": request_id, "error": str(e), "type": type(e).__name__},
+        )
+        return response
+
     except Exception as e:
+        keepalive_task.cancel()
         error_name = type(e).__name__
         log.exception(
             "ConverseStream failed",
@@ -809,6 +833,29 @@ async def handle_anthropic_streaming(body, request_id, request):
         except Exception:
             pass
         return response
+
+
+async def _sse_keepalive(response, interval=15, request_id=None):
+    """Send SSE comment pings to keep the connection alive through proxies.
+
+    SSE comments (lines starting with ':') are ignored by conformant clients
+    but keep TCP connections alive through corporate proxies, NAT gateways,
+    and load balancers that would otherwise kill idle-looking connections.
+    Runs until cancelled — the caller should cancel this task once real
+    stream data starts flowing.
+    """
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            await response.write(b":ping\n\n")
+    except asyncio.CancelledError:
+        pass
+    except (ConnectionResetError, ClientConnectionResetError):
+        # Client already gone — nothing to do
+        pass
+    except Exception:
+        # Don't let keepalive failures crash anything
+        pass
 
 
 async def _iter_stream_events(stream):
@@ -1782,4 +1829,8 @@ if __name__ == "__main__":
         port=port,
         print=None,
         access_log=None,  # We handle logging via middleware
+        # Keep idle connections alive longer than the ALB idle timeout (900s)
+        # to prevent race conditions where the ALB sends a request on a
+        # connection that aiohttp is already closing (default is only 75s).
+        keepalive_timeout=960,
     )

@@ -297,6 +297,46 @@ class TestTranslateToolCallsMessages:
         ]
         assert len(text_blocks) == 0
 
+    def test_empty_assistant_message_gets_placeholder(self):
+        """An interrupted assistant message with empty content should get a placeholder, not blank text."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": ""},
+                {"role": "user", "content": "Try again"},
+            ],
+        }
+        params = main.translate_openai_to_converse(body)
+        messages = params["messages"]
+        assistant_msg = [m for m in messages if m["role"] == "assistant"][0]
+        # Should NOT contain a blank text block
+        blank_blocks = [
+            b for b in assistant_msg["content"] if "text" in b and b["text"] == ""
+        ]
+        assert len(blank_blocks) == 0
+        # Should have a placeholder instead
+        assert len(assistant_msg["content"]) == 1
+        assert assistant_msg["content"][0]["text"] == "."
+
+    def test_empty_text_stripped_from_user_message(self):
+        """Empty text blocks should be stripped from user messages too."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+            ],
+        }
+        params = main.translate_openai_to_converse(body)
+        messages = params["messages"]
+        user_msg = messages[0]
+        # Non-empty text should pass through fine
+        assert user_msg["content"] == [{"text": "Hello"}]
+
 
 # ===========================================================================
 # ready handler

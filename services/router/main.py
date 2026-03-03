@@ -324,13 +324,15 @@ def translate_openai_to_converse(body, enable_cache=False):
         # Convert content to Converse format
         converse_content = _translate_content(content)
 
+        # Strip empty text blocks — Converse API rejects blank text fields.
+        # This commonly occurs when a streaming response is interrupted and the
+        # client saves an assistant message with content: "".
+        converse_content = [
+            b for b in converse_content if not ("text" in b and not b["text"])
+        ]
+
         # Handle assistant messages with tool_calls
         if role == "assistant" and "tool_calls" in msg:
-            # Strip empty text blocks — Converse rejects blank text
-            # alongside toolUse blocks.
-            converse_content = [
-                b for b in converse_content if not ("text" in b and not b["text"])
-            ]
             for tc in msg["tool_calls"]:
                 fn = tc.get("function", {})
                 args_str = fn.get("arguments", "{}")
@@ -347,6 +349,13 @@ def translate_openai_to_converse(body, enable_cache=False):
                         }
                     }
                 )
+
+        # If stripping left no content blocks (e.g. interrupted assistant
+        # message with only empty text), use a placeholder.  Converse requires
+        # at least one content block per message and strict role alternation,
+        # so we cannot simply drop the message.
+        if not converse_content:
+            converse_content = [{"text": "."}]
 
         converse_messages.append({"role": role, "content": converse_content})
 

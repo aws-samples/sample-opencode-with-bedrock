@@ -2,61 +2,130 @@
 
 ## Overview
 
-The share feature allows authenticated users to create shareable links to their OpenCode coding sessions, with real-time WebSocket updates. It integrates with the existing ALB infrastructure for authentication (JWT and OIDC).
+The share feature allows authenticated users to create shareable links to their OpenCode coding sessions, with real-time WebSocket updates. It deploys as an optional CDK stack with a dedicated ALB, Lambda functions, S3 event store, and WebSocket API Gateway.
 
 ## Architecture
 
+```mermaid
+graph TB
+    subgraph Client
+        CLI["CLI (opencode)"]
+    end
+
+    subgraph "Local Proxy (localhost:18080)"
+        Proxy["opencode-auth proxy"]
+    end
+
+    subgraph "AWS — Share Stack"
+        ALB["Share ALB<br/>(share.example.com)"]
+
+        subgraph "ALB Listener Rules"
+            R1["POST /api/share — JWT"]
+            R2["POST /api/share/* — API Key"]
+            R3["GET /share/* — OIDC redirect"]
+            R4["GET /api/share/*/data — OIDC cookie"]
+            R5["GET / — OIDC landing"]
+        end
+
+        ShareLambda["Share API Lambda"]
+        S3["S3 Bucket<br/>(event store)"]
+        BroadcastLambda["Broadcast Lambda"]
+        WSAPI["WebSocket API GW"]
+        DDB["DynamoDB<br/>(connections)"]
+    end
+
+    subgraph "Viewers"
+        Browser["Browser viewers"]
+    end
+
+    CLI --> Proxy
+    Proxy -->|"JWT / API key"| ALB
+    ALB --> R1 & R2 & R3 & R4 & R5
+    R1 & R2 & R3 & R4 & R5 --> ShareLambda
+    ShareLambda -->|"read/write events"| S3
+    ShareLambda -->|"async invoke"| BroadcastLambda
+    BroadcastLambda -->|"push to connections"| WSAPI
+    WSAPI --- DDB
+    Browser -->|"WebSocket"| WSAPI
+    Browser -->|"OIDC auth"| ALB
 ```
-CLI (opencode)
-    |
-    v
-opencode-auth proxy (localhost:18080)
-    |-- /api/share/* --> API ALB (JWT auth) --> Share Lambda --> S3
-    |-- /share/*     --> Distribution ALB (OIDC) --> Share Lambda --> S3
-    |
-    +-- Share Lambda --> Broadcast Lambda --> WebSocket API GW
-                                                |
-                                           DynamoDB (connections)
-                                                |
-                                           Connected viewers
+
+### Request Flow
+
+```mermaid
+sequenceDiagram
+    participant CLI as opencode CLI
+    participant Proxy as opencode-auth proxy
+    participant ALB as Share ALB
+    participant Lambda as Share Lambda
+    participant S3
+    participant Broadcast as Broadcast Lambda
+    participant WS as WebSocket API GW
+    participant Viewer as Browser viewer
+
+    Note over CLI,S3: Create & Sync Flow
+    CLI->>Proxy: POST /api/share
+    Proxy->>ALB: + JWT header
+    ALB->>Lambda: JWT validated
+    Lambda->>S3: PUT share/{id}.json
+    Lambda-->>CLI: { id, secret, url }
+
+    CLI->>Proxy: POST /api/share/{id}/sync
+    Proxy->>ALB: + JWT header
+    ALB->>Lambda: JWT validated
+    Lambda->>S3: PUT share_event/{id}/{ulid}.json
+    Lambda->>Broadcast: async invoke
+    Broadcast->>WS: push to all connections
+
+    Note over Viewer,WS: Viewer Flow
+    Viewer->>ALB: GET /share/{id}
+    ALB-->>Viewer: OIDC redirect → login
+    Viewer->>ALB: GET /share/{id} (with cookie)
+    ALB->>Lambda: OIDC session
+    Lambda->>S3: compact & read events
+    Lambda-->>Viewer: inline HTML viewer
+    Viewer->>WS: WebSocket connect
+    WS-->>Viewer: real-time sync notifications
 ```
 
 ### Components
 
 #### 1. Share Lambda API (`services/share/lambda/`)
-- **Router** (`index.ts`): Routes requests based on path and HTTP method (API Gateway v2 format)
-- **Handlers** (`handlers.ts`): CRUD operations + inline HTML viewer with XSS protection and CSP headers
-- **Business Logic** (`share.ts`): Event-sourcing with compaction, timing-safe secret comparison, input validation
-- **Storage** (`storage.ts`): S3 storage adapter with pagination support
+- **Router** (`src/index.ts`): Routes requests based on path and HTTP method; supports both ALB v1 and API Gateway v2 event formats
+- **Handlers** (`src/handlers.ts`): CRUD operations, inline HTML viewer with XSS protection and CSP headers, landing page, health check
+- **Business Logic** (`src/share.ts`): Event-sourcing with compaction, timing-safe secret comparison, Zod schema validation, payload limits (500 items / 5MB)
+- **Storage** (`src/storage.ts`): S3 storage adapter with pagination support and path-traversal prevention
 
 #### 2. WebSocket Handlers (`services/share/websocket/`)
 - **connect.ts**: Stores WebSocket connection in DynamoDB with 24h TTL and shareId validation
 - **disconnect.ts**: Removes connection from DynamoDB
-- **default.ts**: Handles `subscribe` and `ping` actions
-- **broadcast.ts**: Fans out sync notifications to all connections for a share
+- **default.ts**: Handles `subscribe` (re-subscribe to different shareId) and `ping` actions
+- **broadcast.ts**: Fans out sync notifications to all connections for a share; cleans up stale connections (410 GoneException)
 
 #### 3. Standalone Viewer (`services/share/viewer/`)
-- `index.html` - Viewer page shell
-- `viewer.js` - Client-side rendering logic
-- `styles.css` - Responsive styling with dark mode support
+- `index.html` — Viewer page shell
+- `viewer.js` — Client-side rendering logic (markdown, code blocks, diffs, tool calls)
+- `styles.css` — Responsive styling with dark mode support
+
+> **Note**: The standalone viewer is a reference/development asset. Production uses the inline HTML viewer generated by the Share Lambda's `viewShareHandler`.
 
 #### 4. CDK Stack (`src/stacks/share-stack.ts`)
 Single optional stack containing all share resources:
-- S3 bucket (event store, encrypted, versioned, lifecycle rules)
-- DynamoDB table (WebSocket connections, KMS, TTL, PITR)
+- S3 bucket (event store, encrypted, versioned, lifecycle rules — events expire after 90 days)
+- DynamoDB table (WebSocket connections, AWS-managed encryption, TTL, PITR)
 - Share API Lambda (Node.js 20)
 - 4 WebSocket Lambdas (connect, disconnect, default, broadcast)
-- WebSocket API Gateway (with throttling and access logging)
-- ALB listener rules on both API ALB (JWT) and Distribution ALB (OIDC)
+- WebSocket API Gateway (with throttling: burst 1000, rate 500)
+- Dedicated internet-facing ALB with 5 listener rules (JWT, API key, OIDC)
+- Route53 A record for the share domain
 - CloudWatch alarms for Lambda errors and throttles
-
-#### 5. Legacy CloudFormation (`cloudformation/`)
-- `share-lambda-stack.yaml` - Original POC (retained for reference)
-- `share-websocket-stack.yaml` - Original POC (retained for reference)
+- SSM parameters for cross-stack references
 
 ## API Endpoints
 
-### Via API ALB (programmatic, JWT/API-key auth)
+All endpoints are served by a **dedicated Share ALB** with its own domain (e.g., `share.example.com`).
+
+### Programmatic Access (JWT / API Key auth)
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
@@ -65,30 +134,52 @@ Single optional stack containing all share resources:
 | `GET` | `/api/share/{id}/data` | Get share data | JWT or API key |
 | `DELETE` | `/api/share/{id}` | Delete a share | JWT or API key |
 
-### Via Distribution ALB (browser, OIDC auth)
+### Browser Access (OIDC auth)
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| `GET` | `/share/{id}` | View shared session (HTML) | OIDC redirect |
+| `GET` | `/` | Landing page with usage instructions | OIDC redirect |
+| `GET` | `/share/{id}` | View shared session (inline HTML) | OIDC redirect |
 | `GET` | `/api/share/{id}/data` | Get share data (viewer fetch) | OIDC cookie |
 
 ## Data Model
 
 The share feature uses an **event-sourcing** pattern with S3:
 
-- **`share/{id}.json`** - Share metadata (id, secret, sessionID)
-- **`share_event/{id}/{ulid}.json`** - Append-only event log
-- **`share_compaction/{id}.json`** - Compacted snapshot for fast reads
+```mermaid
+graph LR
+    subgraph "S3 Bucket"
+        Meta["share/{id}.json<br/><i>metadata</i>"]
+        E1["share_event/{id}/{ulid1}.json"]
+        E2["share_event/{id}/{ulid2}.json"]
+        E3["share_event/{id}/{ulid3}.json"]
+        Compact["share_compaction/{id}.json<br/><i>compacted snapshot</i>"]
+    end
+
+    E1 & E2 & E3 -->|"compacted into"| Compact
+```
+
+### S3 Key Patterns
+
+| Key Pattern | Content |
+|-------------|---------|
+| `share/{id}.json` | Share metadata (`id`, `secret`, `sessionID`) |
+| `share_event/{id}/{ulid}.json` | Append-only event log entry (`Data[]`) |
+| `share_compaction/{id}.json` | Compacted snapshot for fast reads (`{ event?, data: Data[] }`) |
 
 ### Data Types
 
-| Type | Description |
-|------|-------------|
-| `session` | Session metadata (title, version, timestamps) |
-| `message` | Chat messages (user/assistant) with role, id, time |
-| `part` | Message parts (text, code, tool calls, reasoning) with messageID |
-| `model` | Model information |
-| `session_diff` | Code diffs |
+| Type | Description | Merge Key |
+|------|-------------|-----------|
+| `session` | Session metadata (title, version, timestamps) | `"session"` |
+| `message` | Chat messages with role, id, time | `"message/{id}"` |
+| `part` | Message parts (text, code, tool calls, reasoning) | `"{messageID}/{id}"` |
+| `model` | Model information | `"model"` |
+| `session_diff` | Code diffs | `"session_diff"` |
+
+### Compaction
+
+On read, the Lambda compacts all events since the last bookmark into a single snapshot using binary search and type-specific merge logic. For text/reasoning parts, the **longest text** is kept (streaming merge).
 
 ## Deployment
 
@@ -119,15 +210,20 @@ Add the share endpoint to `~/.opencode/config.json`:
 {
   "client_id": "...",
   "api_endpoint": "https://oc.example.com/v1",
-  "share_endpoint": "https://oc.example.com"
+  "share_endpoint": "https://share.example.com"
 }
 ```
 
-The `opencode-auth` proxy will intercept `/api/share/*` and `/share/*` requests and forward them to the share endpoint with JWT authentication.
+The `opencode-auth` proxy registers three route patterns when `share_endpoint` is configured:
+- `/api/share` — create share
+- `/api/share/*` — sync, data, delete
+- `/share/*` — viewer (browser)
+
+All requests are reverse-proxied to the share endpoint with JWT authentication injected.
 
 ## Configuration
 
-### Environment Variables (Lambda)
+### Environment Variables (Share API Lambda)
 
 | Variable | Description |
 |----------|-------------|
@@ -135,8 +231,16 @@ The `opencode-auth` proxy will intercept `/api/share/*` and `/share/*` requests 
 | `OPENCODE_STORAGE_REGION` | AWS region for S3 |
 | `BROADCAST_LAMBDA_ARN` | ARN of the WebSocket broadcast Lambda |
 | `API_GATEWAY_URL` | Base URL for the API (used in inline viewer) |
-| `CORS_ALLOWED_ORIGIN` | Allowed CORS origin (defaults to web domain) |
+| `SHARE_VIEWER_BASE_URL` | Base URL for share links (used in create response) |
+| `CORS_ALLOWED_ORIGIN` | Allowed CORS origin (defaults to share domain) |
 | `NODE_ENV` | Environment (`production` / `test`) |
+
+### Environment Variables (WebSocket Lambdas)
+
+| Variable | Description |
+|----------|-------------|
+| `CONNECTIONS_TABLE` | DynamoDB table name for WebSocket connections |
+| `API_GATEWAY_ENDPOINT` | WebSocket API Gateway endpoint (default + broadcast only) |
 
 ### CDK Context
 
@@ -146,13 +250,55 @@ The `opencode-auth` proxy will intercept `/api/share/*` and `/share/*` requests 
 
 ## Security
 
-- **API routes** (`/api/share/*`): JWT validation via API ALB (same as `/v1/chat/completions`) or API key passthrough
-- **Viewer routes** (`/share/*`): OIDC browser redirect via Distribution ALB
+```mermaid
+graph TB
+    subgraph "Authentication"
+        JWT["JWT (Bearer) — programmatic<br/>ALB validates signature via JWKS"]
+        APIKey["API Key (X-API-Key: oc_*) — programmatic<br/>Passthrough at ALB, validated by router"]
+        OIDC["OIDC — browser<br/>ALB redirects to Cognito, 12h session cookie"]
+    end
+
+    subgraph "Authorization"
+        Secret["Share secret — UUID<br/>timing-safe comparison for writes"]
+    end
+
+    subgraph "Data Protection"
+        S3Enc["S3 — encrypted at rest, versioned, SSL enforced"]
+        DDBEnc["DynamoDB — AWS-managed encryption, PITR"]
+        CSP["CSP headers on HTML responses"]
+        XSS["Share IDs HTML-escaped before template injection"]
+    end
+
+    subgraph "Input Validation"
+        Zod["Zod schemas for all data types"]
+        Limits["500 items / 5MB per sync payload"]
+        ShareIdRegex["WebSocket shareId: ^[a-zA-Z0-9_-]{1,64}$"]
+        PathTraversal["S3 key segments reject .. and null bytes"]
+    end
+```
+
+- **Programmatic routes** (`/api/share/*`): JWT validation via ALB JWKS or API key passthrough
+- **Browser routes** (`/share/*`, `/`): OIDC redirect via ALB with 12-hour session cookies
 - **Share writes** (sync/delete): Require share secret (UUID, timing-safe comparison)
 - **S3**: Encrypted at rest (S3-managed), versioned, public access blocked, SSL enforced
 - **DynamoDB**: AWS-managed encryption, point-in-time recovery, TTL for connection cleanup
 - **WebSocket shareId**: Validated against `^[a-zA-Z0-9_-]{1,64}$` pattern
 - **XSS protection**: Share IDs HTML-escaped before template injection, CSP headers on viewer
-- **Input validation**: Sync payloads capped at 500 items / 5MB
-- **IAM**: Lambda invoke scoped to specific broadcast Lambda ARN (not `function:*`)
-- **CORS**: Restricted to configured web domain (not `*`)
+- **Input validation**: Zod schemas for all data types; sync payloads capped at 500 items / 5MB
+- **IAM**: Lambda invoke scoped to specific broadcast Lambda ARN
+- **CORS**: Restricted to configured share domain
+
+## Testing
+
+Tests are in the `test/` directory:
+
+| File | Tests | Coverage |
+|------|-------|---------|
+| `share-lambda.test.ts` | ~25 | Business logic (create/sync/remove, schema validation), all 7 handlers, router path matching, ALB path parameter extraction |
+| `share-stack.test.ts` | ~15 | CDK stack synthesis: S3, DynamoDB, Lambda count, WebSocket API, ALB, listener rules, alarms, SSM params |
+| `share-websocket.test.ts` | ~12 | WebSocket handler input validation, error handling, connect/disconnect/default/broadcast |
+
+```bash
+# Run share tests
+npx jest test/share-lambda.test.ts test/share-stack.test.ts test/share-websocket.test.ts
+```

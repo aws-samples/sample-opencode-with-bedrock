@@ -192,6 +192,15 @@ func newServerInternal(cfg *config.Config, port int, checkPort bool) (*Server, e
 	mux.HandleFunc("/api/token/status", server.handleTokenStatus)
 	mux.HandleFunc("/api/auth/ensure", server.handleEnsure)
 
+	// Share route interception: forward share API calls to the share backend
+	// when configured. The share endpoint may differ from the main API endpoint
+	// (e.g., it goes through the same ALB but at /api/share/* paths).
+	if cfg.ShareEndpoint != "" {
+		mux.HandleFunc("/api/share", server.handleShareProxy)
+		mux.HandleFunc("/api/share/", server.handleShareProxy)
+		mux.HandleFunc("/share/", server.handleShareProxy)
+	}
+
 	server.server = &http.Server{
 		Addr:    fmt.Sprintf("localhost:%d", port),
 		Handler: mux,
@@ -499,6 +508,47 @@ func (s *Server) handleEnsure(w http.ResponseWriter, r *http.Request) {
 		Status:  "ok",
 		Message: "token is valid",
 	})
+}
+
+// handleShareProxy forwards share API requests to the configured share endpoint.
+// This allows the opencode CLI's share calls to reach the custom share backend
+// through the same proxy that handles auth, ensuring JWT tokens are injected.
+func (s *Server) handleShareProxy(w http.ResponseWriter, r *http.Request) {
+	shareTarget, err := url.Parse(s.config.ShareEndpoint)
+	if err != nil {
+		http.Error(w, "invalid share endpoint configuration", http.StatusInternalServerError)
+		return
+	}
+
+	start := time.Now()
+	s.debugLog.Log("SHARE %s %s -> %s", r.Method, r.URL.Path, shareTarget.String())
+
+	// Create a one-off reverse proxy for the share endpoint
+	proxy := httputil.NewSingleHostReverseProxy(shareTarget)
+	proxy.FlushInterval = -1
+	proxy.Transport = s.proxy.Transport
+
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Host = shareTarget.Host
+		s.addAuthHeader(req)
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		fmt.Fprintf(os.Stderr, "[proxy] share upstream error: %s %s -> %v\n", r.Method, r.URL.Path, err)
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"message": fmt.Sprintf("proxy: share backend connection failed: %v", err),
+				"type":    "proxy_error",
+			},
+		})
+	}
+
+	proxy.ServeHTTP(w, r)
+
+	elapsed := time.Since(start)
+	s.debugLog.Log("SHARE DONE %s %s elapsed=%v", r.Method, r.URL.Path, elapsed.Round(time.Millisecond))
 }
 
 // addAuthHeader reads the current token or API key and adds it to the request

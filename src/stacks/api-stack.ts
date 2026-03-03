@@ -273,6 +273,12 @@ export class ApiStack extends cdk.Stack {
       stringValue: this.listener.listenerArn,
     });
 
+    // Export API domain for optional share stack
+    new ssm.StringParameter(this, 'ApiDomainParam', {
+      parameterName: `/opencode/${props.environment}/api/domain`,
+      stringValue: props.domainName,
+    });
+
     // HTTP Listener (redirect to HTTPS)
     this.alb.addListener('HttpListener', {
       port: 80,

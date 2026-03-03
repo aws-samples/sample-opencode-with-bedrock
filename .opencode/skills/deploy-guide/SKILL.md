@@ -62,6 +62,22 @@ Execute each phase by running the corresponding `deploy.sh` subcommand. After ea
 - The CloudFormation stack `OpenCodeDistribution-<env>` deployed successfully
 - The web endpoint responds
 
+### Phase 5: Share (optional)
+
+```bash
+./scripts/deploy.sh share
+```
+
+**What it does:** Builds the share Lambda code (API + WebSocket handlers), then deploys the ShareStack with `enableShareFeature=true`. This creates an S3 bucket for session data, a DynamoDB table for WebSocket connections, a WebSocket API Gateway with connect/disconnect/default routes, 5 Lambda functions (API handler, connect, disconnect, default, broadcast), and ALB listener rules on both the API ALB (priorities 7-8, JWT auth) and the Distribution ALB (priorities 7-8, OIDC auth).
+
+**Verify:** Check that:
+- The CloudFormation stack `OpenCodeShare-<env>` deployed successfully
+- The SSM parameter `/opencode/<env>/share/websocket-url` has a value
+- The WebSocket endpoint is reachable: `wscat -c <websocket-url>`
+- The share API responds via the API ALB: `curl -sf https://<api-domain>/api/share/health` (with valid JWT)
+
+**Note:** This phase is optional. If you skip it, the share feature is simply not available — no other stacks are affected.
+
 ## After deployment
 
 Run `./scripts/deploy.sh info` to display the API and web endpoints.

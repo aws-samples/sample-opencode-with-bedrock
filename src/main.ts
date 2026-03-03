@@ -7,6 +7,7 @@ import { SharedCertificateStack } from './stacks/shared-certificate-stack';
 import { AuthStack, AuthProvider } from './stacks/auth-stack';
 import { ApiStack } from './stacks/api-stack';
 import { DistributionStack } from './stacks/distribution-stack';
+import { ShareStack } from './stacks/share-stack';
 
 const app = new cdk.App();
 
@@ -19,9 +20,13 @@ const hostedZoneName = app.node.tryGetContext('hostedZoneName') || 'example.com'
 const certificateDomain = app.node.tryGetContext('certificateDomain') || '*.oc.example.com';
 const apiDomain = app.node.tryGetContext('apiDomain') || 'oc.example.com';
 const webDomain = app.node.tryGetContext('webDomain') || 'downloads.oc.example.com';
+const shareDomain = app.node.tryGetContext('shareDomain') || 'share.oc.example.com';
 
 // Auth provider selection: 'cognito' (default) or 'external'
 const authProvider = (app.node.tryGetContext('authProvider') || 'cognito') as AuthProvider;
+
+// Optional feature flags
+const enableShareFeature = app.node.tryGetContext('enableShareFeature') === 'true';
 
 // Common stack props
 const stackProps = {
@@ -122,6 +127,23 @@ const distributionStack = new DistributionStack(app, `OpenCodeDistribution-${env
 // cdk-nag: AWS Solutions checks
 Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }));
 
+// ============================================
+// Phase 5: Optional — Share Feature
+// ============================================
+
+// Share stack — session sharing with real-time WebSocket updates
+// Enable with: -c enableShareFeature=true
+// Creates: S3 bucket, DynamoDB table, Lambda functions, WebSocket API,
+//          ALB listener rules on both API and Distribution ALBs
+if (enableShareFeature) {
+  new ShareStack(app, `OpenCodeShare-${environment}`, {
+    ...stackProps,
+    shareDomain,
+    hostedZoneId,
+    hostedZoneName,
+  });
+}
+
 // Note: No addDependency() calls between stacks!
 // All cross-stack references use SSM Parameter Store.
 //
@@ -131,6 +153,8 @@ Aspects.of(app).add(new AwsSolutionsChecks({ verbose: true }));
 // 3. AuthStack (creates OIDC config, exports to SSM)
 // 4. ApiStack (creates ALB, target group, ECS service, and listener rules)
 // 5. DistributionStack (creates Lambda + S3 + OIDC ALB for web traffic)
+// 6. ShareStack (optional, -c enableShareFeature=true)
+//    Creates: S3, DynamoDB, Lambda, WebSocket API, ALB listener rules
 //
 // This allows independent updates and easier troubleshooting.
 // Stacks can be deployed individually as long as their SSM dependencies exist.

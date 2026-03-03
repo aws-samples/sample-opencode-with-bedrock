@@ -454,6 +454,71 @@ publish_distribution_assets() {
     "$SCRIPT_DIR/publish-distribution.sh" --profile "${AWS_PROFILE:-default}" --region "$AWS_REGION"
 }
 
+# ─── Share Feature ────────────────────────────────────────
+
+# Build share Lambda and WebSocket code
+build_share_lambdas() {
+    log_info "======================================"
+    log_info "Building Share Feature Lambda Code"
+    log_info "======================================"
+
+    # Build share API Lambda
+    if [ -d "$PROJECT_DIR/services/share/lambda" ]; then
+        log_info "Building share API Lambda..."
+        cd "$PROJECT_DIR/services/share/lambda"
+        if [ -f "package-lock.json" ]; then
+            npm ci
+        else
+            npm install
+        fi
+        npm run build
+        npm prune --omit=dev
+        log_success "Share API Lambda built"
+    else
+        log_error "Share Lambda source not found at services/share/lambda"
+        return 1
+    fi
+
+    # Build share WebSocket Lambdas
+    if [ -d "$PROJECT_DIR/services/share/websocket" ]; then
+        log_info "Building share WebSocket Lambdas..."
+        cd "$PROJECT_DIR/services/share/websocket"
+        if [ -f "package-lock.json" ]; then
+            npm ci
+        else
+            npm install
+        fi
+        npm run build
+        npm prune --omit=dev
+        log_success "Share WebSocket Lambdas built"
+    else
+        log_error "Share WebSocket source not found at services/share/websocket"
+        return 1
+    fi
+
+    cd "$PROJECT_DIR"
+}
+
+# share — S3, DynamoDB, WebSocket API GW, Lambdas, ALB rules
+deploy_share() {
+    log_info "======================================"
+    log_info "Deploying Share Feature"
+    log_info "======================================"
+
+    # Build Lambda code first
+    build_share_lambdas
+
+    # Ensure enableShareFeature context flag is set
+    if [[ "$CDK_CONTEXT_FLAGS" != *"enableShareFeature=true"* ]]; then
+        CDK_CONTEXT_FLAGS="$CDK_CONTEXT_FLAGS -c enableShareFeature=true"
+    fi
+
+    cd "$PROJECT_DIR"
+    npm run build
+
+    deploy_stack "Share Stack" "OpenCodeShare-${ENVIRONMENT}"
+}
+
 # ─── Full Deployment ──────────────────────────────────────
 
 # Deploy everything
@@ -511,6 +576,19 @@ deploy_all() {
     # Step 7: Distribution (Landing page + OIDC ALB)
     deploy_distribution
 
+    # Step 8: Share feature (optional)
+    if [[ "$CDK_CONTEXT_FLAGS" == *"enableShareFeature=true"* ]]; then
+        deploy_share
+    else
+        local deploy_share_answer="n"
+        read -r -p "$(echo -e "${YELLOW}[PROMPT]${NC} Deploy share feature? (y/N): ")" deploy_share_answer
+        if [[ "$deploy_share_answer" =~ ^[Yy]$ ]]; then
+            deploy_share
+        else
+            log_info "Skipping share feature deployment"
+        fi
+    fi
+
     log_success "======================================"
     log_success "Full deployment completed successfully!"
     log_success "======================================"
@@ -540,6 +618,20 @@ print_deployment_info() {
         log_info "Web Endpoint: https://$web_dns"
     fi
 
+    # Share feature endpoints (if deployed)
+    local share_ws_url
+    local share_api_path
+    share_ws_url=$(aws ssm get-parameter --name "/opencode/${ENVIRONMENT}/share/websocket-url" --query 'Parameter.Value' --output text 2>/dev/null) || true
+    if [ -n "$share_ws_url" ]; then
+        log_info "Share WebSocket: $share_ws_url"
+        if [ -n "$api_dns" ]; then
+            log_info "Share API:       https://$api_dns/api/share"
+        fi
+        if [ -n "$web_dns" ]; then
+            log_info "Share Viewer:    https://$web_dns/share/{shareId}"
+        fi
+    fi
+
     log_info ""
     log_info "Useful Commands:"
     log_info "  View CDK diff:        cdk diff"
@@ -562,6 +654,7 @@ Commands:
   auth                Deploy Auth stack (OIDC config + auto-create ALB secret)
   api                 Deploy API stack (ECS + JWT ALB)
   distribution        Deploy Distribution stack (Landing page + OIDC ALB)
+  share               Deploy Share feature (S3, DynamoDB, WebSocket, Lambdas, ALB rules)
   publish             Build and publish distribution assets to S3
   preflight           Run all validations without deploying
   build-image         Build and push router container image only
@@ -580,6 +673,10 @@ Examples:
   $0 auth                         # Deploy Auth only (+ auto-create secret)
   $0 -e prod all                  # Deploy all stacks to production
   $0 preflight                    # Validate without deploying
+
+  # Deploy share feature:
+  $0 share                          # Build share Lambdas + deploy ShareStack
+  $0 -c enableShareFeature=true all # Full deploy with share enabled
 
   # Deploy with IdP federation (secrets via env vars):
   IDP_CLIENT_ID=xxx IDP_CLIENT_SECRET=yyy $0 -c idpName=YourIdP -c idpIssuer=https://your-idp-issuer.example.com
@@ -617,7 +714,7 @@ main() {
                 show_usage
                 exit 0
                 ;;
-            all|network|auth|api|distribution|publish|build-image|redeploy|info|preflight)
+            all|network|auth|api|distribution|share|publish|build-image|redeploy|info|preflight)
                 command="$1"
                 shift
                 ;;
@@ -673,6 +770,10 @@ main() {
             npm run build
             publish_distribution_assets
             deploy_distribution
+            ;;
+        share)
+            check_prerequisites
+            deploy_share
             ;;
         publish)
             check_prerequisites

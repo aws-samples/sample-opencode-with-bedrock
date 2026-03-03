@@ -155,6 +155,9 @@ func applyOpenCodeConfig(cfg *config.Config, oc *config.OpenCodeConfig) {
 	if cfg.VersionCheckURL == "" {
 		cfg.VersionCheckURL = oc.VersionCheckURL
 	}
+	if cfg.ShareEndpoint == "" {
+		cfg.ShareEndpoint = oc.ShareEndpoint
+	}
 }
 
 func runLogin(timeout time.Duration, noBrowser bool) error {

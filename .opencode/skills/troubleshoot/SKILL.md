@@ -17,6 +17,7 @@ Ask the user what's failing, or detect from conversation context. Common categor
 4. **DNS / Certificate** — domain not resolving, TLS errors
 5. **Secrets Manager** — distribution stack fails, missing secret
 6. **CDK / CloudFormation** — stack deploy failures
+7. **Share feature** — share Lambda errors, WebSocket connection issues, share viewer not loading
 
 ## Diagnostic checks by category
 
@@ -98,11 +99,52 @@ Ask the user what's failing, or detect from conversation context. Common categor
 1. Check stack status and events:
    ```bash
    aws cloudformation describe-stack-events --stack-name <stack> --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED`][:5]'
-   ```
+    ```
 2. Common failures:
    - **Resource already exists** — a previous failed deploy left orphaned resources. Delete the stack and redeploy.
    - **Insufficient permissions** — check IAM policies for the deploying role.
    - **Limit exceeded** — check service quotas (VPCs, EIPs, etc.).
+
+### Share feature
+
+1. Check if the share stack is deployed:
+   ```bash
+   aws cloudformation describe-stacks --stack-name OpenCodeShare-<env> --query 'Stacks[0].StackStatus'
+   ```
+2. Check share SSM parameters:
+   ```bash
+   aws ssm get-parameters-by-path --path "/opencode/<env>/share/" --query 'Parameters[].{Name:Name,Value:Value}' --output table
+   ```
+3. Check share API Lambda logs:
+   ```bash
+   aws logs tail "/aws/lambda/opencode-share-api-<env>" --since 30m
+   ```
+4. Check WebSocket Lambda logs (connect/disconnect/default):
+   ```bash
+   aws logs tail "/aws/lambda/opencode-share-ws-connect-<env>" --since 30m
+   aws logs tail "/aws/lambda/opencode-share-ws-disconnect-<env>" --since 30m
+   ```
+5. Check DynamoDB connections table for stale entries:
+   ```bash
+   TABLE=$(aws ssm get-parameter --name "/opencode/<env>/share/connections-table-name" --query 'Parameter.Value' --output text 2>/dev/null)
+   aws dynamodb scan --table-name "$TABLE" --select COUNT
+   ```
+6. Check S3 bucket for share data:
+   ```bash
+   BUCKET=$(aws ssm get-parameter --name "/opencode/<env>/share/bucket-name" --query 'Parameter.Value' --output text 2>/dev/null)
+   aws s3 ls "s3://$BUCKET/" --summarize
+   ```
+7. Verify ALB rules exist at priorities 7-8 on both ALBs:
+   ```bash
+   # API ALB (JWT)
+   LISTENER_ARN=$(aws ssm get-parameter --name "/opencode/<env>/alb/jwt/listener-arn" --query 'Parameter.Value' --output text)
+   aws elbv2 describe-rules --listener-arn "$LISTENER_ARN" --query 'Rules[?Priority==`7` || Priority==`8`]'
+   ```
+8. Test WebSocket connectivity:
+   ```bash
+   WS_URL=$(aws ssm get-parameter --name "/opencode/<env>/share/websocket-url" --query 'Parameter.Value' --output text)
+   # Use wscat or curl to test: wscat -c "$WS_URL"
+   ```
 
 ## Remediation suggestions
 
@@ -111,6 +153,7 @@ After diagnosing, suggest specific fixes:
 - For secret issues: `./scripts/deploy.sh auth` (Cognito) or `./scripts/setup.sh` (external)
 - For ECS issues: `./scripts/deploy.sh redeploy`
 - For full redeploy: `./scripts/deploy.sh`
+- For share feature issues: `./scripts/deploy.sh share`
 - For preflight validation: `./scripts/deploy.sh preflight`
 
 Get cluster name, service name, and other resource identifiers from SSM parameters under `/opencode/<env>/`.

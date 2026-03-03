@@ -1,0 +1,22 @@
+{
+  "name": "opencode-share-websocket",
+  "version": "1.0.0",
+  "description": "OpenCode Share WebSocket Lambda handlers",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "package": "npm run build && npm run install:prod && zip -r share-websocket.zip dist/ node_modules/",
+    "install:prod": "npm ci --omit=dev",
+    "clean": "rm -rf dist/ node_modules/ share-websocket.zip"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/lib-dynamodb": "^3.600.0",
+    "@aws-sdk/client-apigatewaymanagementapi": "^3.600.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.131",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

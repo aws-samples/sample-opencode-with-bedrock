@@ -18,6 +18,9 @@ Main deployment script that orchestrates the deployment of all stacks in the cor
 ./scripts/deploy.sh api           # API (ECS + JWT ALB)
 ./scripts/deploy.sh distribution  # Distribution (Landing page + OIDC ALB)
 
+# Deploy share feature (optional)
+./scripts/deploy.sh share         # Share feature (S3, DynamoDB, WebSocket, Lambdas)
+
 # Validate without deploying
 ./scripts/deploy.sh preflight
 
@@ -53,6 +56,10 @@ IDP_CLIENT_ID=xxx IDP_CLIENT_SECRET=yyy ./scripts/deploy.sh
 
 4. **distribution** - Landing Page + Browser Auth
    - DistributionStack: S3 bucket, Lambda function, OIDC ALB for browser auth
+
+5. **share** *(optional)* - Session Sharing
+   - ShareStack: S3 storage, DynamoDB connections table, WebSocket API Gateway, Lambda functions, ALB listener rules
+   - Enabled with `-c enableShareFeature=true` or `./scripts/deploy.sh share`
 
 ### Environment Variables
 
@@ -137,6 +144,12 @@ cdk deploy OpenCodeApi-dev
 
 # Deploy Distribution Stack (includes Lambda, S3, and OIDC ALB)
 cdk deploy OpenCodeDistribution-dev
+
+# Deploy Share Stack (optional — requires enableShareFeature context flag)
+# First build Lambda code:
+cd services/share/lambda && npm install && npm run build && npm prune --omit=dev && cd ../../..
+cd services/share/websocket && npm install && npm run build && npm prune --omit=dev && cd ../../..
+cdk deploy OpenCodeShare-dev -c enableShareFeature=true
 ```
 
 **Note:** The ApiStack and DistributionStack are consolidated stacks that create multiple resources. Do not attempt to deploy TargetGroup, JwtAlb, Router, or OidcAlb stacks separately - they have been merged into ApiStack and DistributionStack.

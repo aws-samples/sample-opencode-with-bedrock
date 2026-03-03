@@ -223,6 +223,14 @@ WEB_DOMAIN=$(aws cloudformation describe-stacks \
     --query 'Stacks[0].Outputs[?OutputKey==`WebDomainName`].OutputValue' \
     --output text 2>/dev/null || echo "")
 
+# Get share domain from Share stack (optional -- only exists if share feature is deployed)
+SHARE_DOMAIN=$(aws cloudformation describe-stacks \
+    --stack-name "OpenCodeShare-${ENVIRONMENT}" \
+    --region "$REGION" \
+    --profile "$PROFILE" \
+    --query 'Stacks[0].Outputs[?OutputKey==`ShareDomain`].OutputValue' \
+    --output text 2>/dev/null || echo "")
+
 if [[ -n "$CLI_CLIENT_ID" ]] && [[ "$CLI_CLIENT_ID" != "None" ]]; then
     echo "  CLI Client ID: $CLI_CLIENT_ID"
 fi
@@ -234,6 +242,9 @@ if [[ -n "$OIDC_ISSUER" ]] && [[ "$OIDC_ISSUER" != "None" ]]; then
 fi
 if [[ -n "$WEB_DOMAIN" ]] && [[ "$WEB_DOMAIN" != "None" ]]; then
     echo "  Web Domain: $WEB_DOMAIN"
+fi
+if [[ -n "$SHARE_DOMAIN" ]] && [[ "$SHARE_DOMAIN" != "None" ]]; then
+    echo "  Share Domain: $SHARE_DOMAIN"
 fi
 echo ""
 
@@ -260,13 +271,39 @@ cp "$ASSETS_DIR/install.sh" "$PACKAGE_DIR/"
 echo "  Copying config files..."
 if [[ -n "$CLI_CLIENT_ID" ]] && [[ "$CLI_CLIENT_ID" != "None" ]] && [[ -n "$API_DOMAIN" ]] && [[ "$API_DOMAIN" != "None" ]]; then
     echo "  Injecting CLI Client ID, API Domain, and OIDC Issuer"
-    sed -e "s|{{CLIENT_ID}}|$CLI_CLIENT_ID|g" -e "s|{{API_DOMAIN}}|$API_DOMAIN|g" -e "s|{{ISSUER}}|$OIDC_ISSUER|g" -e "s|{{WEB_DOMAIN}}|$WEB_DOMAIN|g" "$ASSETS_DIR/opencode-config.json" > "$PACKAGE_DIR/opencode-config.json"
+    # Determine share domain value for template (empty string if share not deployed)
+    SHARE_DOMAIN_VALUE=""
+    if [[ -n "$SHARE_DOMAIN" ]] && [[ "$SHARE_DOMAIN" != "None" ]]; then
+        SHARE_DOMAIN_VALUE="$SHARE_DOMAIN"
+    fi
+    sed -e "s|{{CLIENT_ID}}|$CLI_CLIENT_ID|g" \
+        -e "s|{{API_DOMAIN}}|$API_DOMAIN|g" \
+        -e "s|{{ISSUER}}|$OIDC_ISSUER|g" \
+        -e "s|{{WEB_DOMAIN}}|$WEB_DOMAIN|g" \
+        -e "s|{{SHARE_DOMAIN}}|$SHARE_DOMAIN_VALUE|g" \
+        "$ASSETS_DIR/opencode-config.json" > "$PACKAGE_DIR/opencode-config.json"
 else
     print_warning "Could not fetch values from CloudFormation, using template config"
     cp "$ASSETS_DIR/opencode-config.json" "$PACKAGE_DIR/"
 fi
 
 cp "$ASSETS_DIR/opencode.json" "$PACKAGE_DIR/"
+
+# If share feature is deployed, inject enterprise.url and share settings into
+# the distributed opencode.json so fresh installs get share support out of the box.
+if [[ -n "$SHARE_DOMAIN" ]] && [[ "$SHARE_DOMAIN" != "None" ]]; then
+    echo "  Injecting share settings into opencode.json"
+    python3 -c "
+import json
+with open('$PACKAGE_DIR/opencode.json') as f:
+    oc = json.load(f)
+oc['enterprise'] = {'url': 'http://localhost:18080'}
+oc['share'] = 'manual'
+with open('$PACKAGE_DIR/opencode.json', 'w') as f:
+    json.dump(oc, f, indent=2)
+    f.write('\n')
+"
+fi
 
 # Create zip
 echo "  Creating zip..."
@@ -335,6 +372,8 @@ fi
 # Build config-patch.json from opencode.json
 # This converts each model entry into a set_deep operation, and also patches
 # config.json with version_check_url for existing installs that lack it.
+# If the share feature is deployed, it also patches opencode.json with
+# enterprise.url and share settings.
 CONFIG_PATCH_JSON=$(python3 -c "
 import json, sys
 
@@ -353,6 +392,14 @@ for provider_name, provider_config in provider.items():
     options = provider_config.get('options')
     if options:
         set_deep[f'provider.{provider_name}.options'] = options
+
+# If share feature is deployed, add enterprise URL and share mode.
+# The enterprise.url points at the local proxy (localhost:18080) which
+# injects JWT auth headers before forwarding to the share backend.
+share_domain = '$SHARE_DOMAIN'
+if share_domain and share_domain != 'None':
+    set_deep['enterprise'] = {'url': 'http://localhost:18080'}
+    set_deep['share'] = 'manual'
 
 # Build the config patch
 patch = {
@@ -377,6 +424,8 @@ if '$OIDC_ISSUER' and '$OIDC_ISSUER' != 'None':
     config_set['issuer'] = '$OIDC_ISSUER'
 if '$WEB_DOMAIN' and '$WEB_DOMAIN' != 'None':
     config_set['version_check_url'] = 'https://$WEB_DOMAIN/version.json'
+if share_domain and share_domain != 'None':
+    config_set['share_endpoint'] = share_domain
 
 print(json.dumps(patch, indent=2))
 ")

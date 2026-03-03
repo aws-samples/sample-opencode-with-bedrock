@@ -33,6 +33,9 @@ Check if auth SSM parameters exist under `/opencode/<environment>/oidc/`. This i
 ### 8. Secrets Manager (informational)
 Check if `opencode/<environment>/oidc-alb-client-secret` exists in Secrets Manager. This is informational — the secret is auto-created during `deploy.sh auth` for Cognito mode.
 
+### 9. Share feature configuration (informational)
+Check if the user intends to deploy the share feature by looking for `enableShareFeature` in `cdk.context.json` or recent CDK context flags. Also check if share SSM parameters already exist under `/opencode/<environment>/share/`. This is informational — the share feature is optional and has no impact on the core deployment.
+
 ## Output format
 
 After all checks, print a summary table:
@@ -48,6 +51,7 @@ Preflight Summary
 ✓ CDK synth            — passed
 ○ SSM parameters       — not found (expected before first deploy)
 ○ Secrets Manager      — not found (auto-created during auth deploy)
+○ Share feature        — not configured (optional, deploy with: ./scripts/deploy.sh share)
 ─────────────────────────────────
 Result: READY TO DEPLOY
 ```

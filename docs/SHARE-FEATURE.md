@@ -1,69 +1,76 @@
-# OpenCode Share Feature (POC)
+# OpenCode Share Feature
 
 ## Overview
 
-The share feature allows users to create public, shareable links to their OpenCode coding sessions. It enables collaboration and sharing of AI coding sessions via a simple URL.
+The share feature allows authenticated users to create shareable links to their OpenCode coding sessions, with real-time WebSocket updates. It integrates with the existing ALB infrastructure for authentication (JWT and OIDC).
 
 ## Architecture
 
 ```
-                         Internet
-                            |
-                   +--------v--------+
-                   |  API Gateway    |
-                   |  (HTTP API)     |
-                   +--------+--------+
-                            |
-                   +--------v--------+
-                   |  Lambda         |
-                   |  (Share API)    |
-                   +--------+--------+
-                            |
-              +-------------+-------------+
-              |                           |
-     +--------v--------+        +--------v--------+
-     |  S3 Bucket      |        |  Lambda         |
-     |  (Event Store)  |        |  (Broadcast)    |
-     +--------+--------+        +--------+--------+
-              |                           |
-              |                  +--------v--------+
-              |                  |  API Gateway    |
-              |                  |  (WebSocket)    |
-              |                  +--------+--------+
-              |                           |
-              |                  +--------v--------+
-              |                  |  DynamoDB       |
-              |                  |  (Connections)  |
-              |                  +-----------------+
+CLI (opencode)
+    |
+    v
+opencode-auth proxy (localhost:18080)
+    |-- /api/share/* --> API ALB (JWT auth) --> Share Lambda --> S3
+    |-- /share/*     --> Distribution ALB (OIDC) --> Share Lambda --> S3
+    |
+    +-- Share Lambda --> Broadcast Lambda --> WebSocket API GW
+                                                |
+                                           DynamoDB (connections)
+                                                |
+                                           Connected viewers
 ```
 
 ### Components
 
 #### 1. Share Lambda API (`services/share/lambda/`)
-- **Router** (`index.ts`): Routes requests based on path and HTTP method
-- **Handlers** (`handlers.ts`): 6 Lambda handlers for CRUD operations + inline HTML viewer
-- **Business Logic** (`share.ts`): Event-sourcing with compaction for efficient retrieval
-- **Storage** (`storage.ts`): S3 storage adapter
+- **Router** (`index.ts`): Routes requests based on path and HTTP method (API Gateway v2 format)
+- **Handlers** (`handlers.ts`): CRUD operations + inline HTML viewer with XSS protection and CSP headers
+- **Business Logic** (`share.ts`): Event-sourcing with compaction, timing-safe secret comparison, input validation
+- **Storage** (`storage.ts`): S3 storage adapter with pagination support
 
-#### 2. Standalone Viewer (`services/share/viewer/`)
+#### 2. WebSocket Handlers (`services/share/websocket/`)
+- **connect.ts**: Stores WebSocket connection in DynamoDB with 24h TTL and shareId validation
+- **disconnect.ts**: Removes connection from DynamoDB
+- **default.ts**: Handles `subscribe` and `ping` actions
+- **broadcast.ts**: Fans out sync notifications to all connections for a share
+
+#### 3. Standalone Viewer (`services/share/viewer/`)
 - `index.html` - Viewer page shell
 - `viewer.js` - Client-side rendering logic
 - `styles.css` - Responsive styling with dark mode support
 
-#### 3. CloudFormation (`cloudformation/`)
-- `share-lambda-stack.yaml` - Lambda + API Gateway + S3
-- `share-websocket-stack.yaml` - WebSocket API + DynamoDB + Lambda
+#### 4. CDK Stack (`src/stacks/share-stack.ts`)
+Single optional stack containing all share resources:
+- S3 bucket (event store, encrypted, versioned, lifecycle rules)
+- DynamoDB table (WebSocket connections, KMS, TTL, PITR)
+- Share API Lambda (Node.js 20)
+- 4 WebSocket Lambdas (connect, disconnect, default, broadcast)
+- WebSocket API Gateway (with throttling and access logging)
+- ALB listener rules on both API ALB (JWT) and Distribution ALB (OIDC)
+- CloudWatch alarms for Lambda errors and throttles
+
+#### 5. Legacy CloudFormation (`cloudformation/`)
+- `share-lambda-stack.yaml` - Original POC (retained for reference)
+- `share-websocket-stack.yaml` - Original POC (retained for reference)
 
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check |
-| `POST` | `/api/share` | Create a new share |
-| `POST` | `/api/share/{id}/sync` | Sync session data to share |
-| `GET` | `/api/share/{id}/data` | Get share data |
-| `DELETE` | `/api/share/{id}` | Delete a share |
-| `GET` | `/share/{id}` | View shared session (HTML) |
+### Via API ALB (programmatic, JWT/API-key auth)
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `POST` | `/api/share` | Create a new share | JWT or API key |
+| `POST` | `/api/share/{id}/sync` | Sync session data | JWT or API key |
+| `GET` | `/api/share/{id}/data` | Get share data | JWT or API key |
+| `DELETE` | `/api/share/{id}` | Delete a share | JWT or API key |
+
+### Via Distribution ALB (browser, OIDC auth)
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| `GET` | `/share/{id}` | View shared session (HTML) | OIDC redirect |
+| `GET` | `/api/share/{id}/data` | Get share data (viewer fetch) | OIDC cookie |
 
 ## Data Model
 
@@ -78,8 +85,8 @@ The share feature uses an **event-sourcing** pattern with S3:
 | Type | Description |
 |------|-------------|
 | `session` | Session metadata (title, version, timestamps) |
-| `message` | Chat messages (user/assistant) |
-| `part` | Message parts (text, code, tool calls, reasoning) |
+| `message` | Chat messages (user/assistant) with role, id, time |
+| `part` | Message parts (text, code, tool calls, reasoning) with messageID |
 | `model` | Model information |
 | `session_diff` | Code diffs |
 
@@ -87,71 +94,65 @@ The share feature uses an **event-sourcing** pattern with S3:
 
 ### Prerequisites
 
-- AWS account with CloudFormation access
+- All base stacks deployed (Network, Certificate, Auth, API, Distribution)
 - Node.js 20+ for Lambda runtime
-- AWS CLI configured
 
-### Deploy Infrastructure
-
-```bash
-# Deploy Lambda + API Gateway + S3
-aws cloudformation deploy \
-  --template-file cloudformation/share-lambda-stack.yaml \
-  --stack-name opencode-share-lambda-stack \
-  --capabilities CAPABILITY_IAM
-
-# Deploy WebSocket support
-aws cloudformation deploy \
-  --template-file cloudformation/share-websocket-stack.yaml \
-  --stack-name opencode-share-websocket-stack \
-  --capabilities CAPABILITY_IAM
-```
-
-### Deploy Lambda Code
+### Deploy with CDK
 
 ```bash
-cd services/share/lambda
-npm install
-npm run build
-npm run package
-aws lambda update-function-code \
-  --function-name opencode-share-lambda-stack-api \
-  --zip-file fileb://share-api.zip
+# Build Lambda code first
+cd services/share/lambda && npm install && npm run build && cd -
+cd services/share/websocket && npm install && npm run build && cd -
+
+# Deploy share stack (optional feature flag)
+npx cdk deploy OpenCodeShare-dev -c enableShareFeature=true
+
+# Deploy without share (default)
+npx cdk deploy --all
 ```
+
+### Configure opencode-auth
+
+Add the share endpoint to `~/.opencode/config.json`:
+
+```json
+{
+  "client_id": "...",
+  "api_endpoint": "https://oc.example.com/v1",
+  "share_endpoint": "https://oc.example.com"
+}
+```
+
+The `opencode-auth` proxy will intercept `/api/share/*` and `/share/*` requests and forward them to the share endpoint with JWT authentication.
 
 ## Configuration
 
-### Environment Variables
+### Environment Variables (Lambda)
 
 | Variable | Description |
 |----------|-------------|
 | `OPENCODE_STORAGE_BUCKET` | S3 bucket name for share data |
 | `OPENCODE_STORAGE_REGION` | AWS region for S3 |
 | `BROADCAST_LAMBDA_ARN` | ARN of the WebSocket broadcast Lambda |
-| `API_GATEWAY_URL` | Base URL for the API Gateway (used in inline viewer) |
+| `API_GATEWAY_URL` | Base URL for the API (used in inline viewer) |
+| `CORS_ALLOWED_ORIGIN` | Allowed CORS origin (defaults to web domain) |
 | `NODE_ENV` | Environment (`production` / `test`) |
 
-### Viewer Configuration
+### CDK Context
 
-The standalone viewer (`services/share/viewer/`) uses `window.SHARE_API_BASE` to configure the API endpoint. Set this before loading `viewer.js`:
-
-```html
-<script>window.SHARE_API_BASE = 'https://your-api-gateway-url.execute-api.us-east-1.amazonaws.com/prod';</script>
-<script src="viewer.js"></script>
-```
+| Context Key | Default | Description |
+|-------------|---------|-------------|
+| `enableShareFeature` | `'false'` | Set to `'true'` to deploy the share stack |
 
 ## Security
 
-- **Share Creation**: Public (no auth required in POC)
-- **Share Write (sync)**: Requires share secret (UUID generated at creation)
-- **Share Read**: Publicly accessible (by design for sharing)
-- **S3**: Encrypted at rest (AES-256), deny insecure transport
-- **DynamoDB**: Encrypted at rest (KMS), point-in-time recovery enabled
-
-## Status
-
-This is a **proof of concept** (POC). Future work includes:
-- Authentication integration (JWT/Cognito)
-- Share expiration and automatic cleanup
-- Access controls (password protection, domain restrictions)
-- CDK integration with the main OpenCode stack
+- **API routes** (`/api/share/*`): JWT validation via API ALB (same as `/v1/chat/completions`) or API key passthrough
+- **Viewer routes** (`/share/*`): OIDC browser redirect via Distribution ALB
+- **Share writes** (sync/delete): Require share secret (UUID, timing-safe comparison)
+- **S3**: Encrypted at rest (S3-managed), versioned, public access blocked, SSL enforced
+- **DynamoDB**: AWS-managed encryption, point-in-time recovery, TTL for connection cleanup
+- **WebSocket shareId**: Validated against `^[a-zA-Z0-9_-]{1,64}$` pattern
+- **XSS protection**: Share IDs HTML-escaped before template injection, CSP headers on viewer
+- **Input validation**: Sync payloads capped at 500 items / 5MB
+- **IAM**: Lambda invoke scoped to specific broadcast Lambda ARN (not `function:*`)
+- **CORS**: Restricted to configured web domain (not `*`)

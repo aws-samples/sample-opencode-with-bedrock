@@ -84,10 +84,14 @@ Verify the expected rule priority chain:
 | 1 | Health Check | `/health`, `/health/*`, `/ready` — no auth |
 | 3 | API Key Management | `/v1/api-keys*` + Bearer — JWT validated |
 | 5 | JWT Validation | `Authorization: Bearer*` — JWT validated |
+| 7 | Share API (JWT) | `/api/share*` + Bearer — JWT validated (only when share feature enabled) |
+| 8 | Share API (API Key) | `/api/share*` + `X-API-Key: oc_*` — forwarded to share Lambda (only when share feature enabled) |
 | 10 | API Key Passthrough | `X-API-Key: oc_*` — forwarded to router |
 | default | Catch-all | Returns 401 |
 
 If rules are missing or misordered, suggest redeploying the API stack: `./scripts/deploy.sh api`.
+
+**Note:** Rules at priority 7-8 only exist when the share feature is deployed (`./scripts/deploy.sh share`). The Distribution ALB also gets share rules at priorities 7-8 for browser-based share viewer access (OIDC auth). If the user reports share-related 401 errors, check both ALBs.
 
 ## Step 5: API key debugging (if applicable)
 

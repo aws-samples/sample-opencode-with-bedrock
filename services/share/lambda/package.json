@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "package": "npm run build && npm run install:prod && zip -r share-api.zip dist/ node_modules/",
-    "install:prod": "npm ci --production",
+    "install:prod": "npm ci --omit=dev",
     "clean": "rm -rf dist/ node_modules/ share-api.zip"
   },
   "dependencies": {

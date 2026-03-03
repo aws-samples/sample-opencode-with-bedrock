@@ -38,6 +38,8 @@ type Config struct {
 	ClientVersion string
 	// Debug mode for verbose logging
 	Debug bool
+	// Share endpoint URL for session sharing
+	ShareEndpoint string
 }
 
 // Default configuration values
@@ -140,6 +142,7 @@ type OpenCodeConfig struct {
 	Issuer            string `json:"issuer,omitempty"`
 	APIKey            string `json:"api_key,omitempty"`
 	VersionCheckURL   string `json:"version_check_url,omitempty"`
+	ShareEndpoint     string `json:"share_endpoint,omitempty"`
 }
 
 // SaveOpenCodeConfig writes the config back to ~/.opencode/config.json.

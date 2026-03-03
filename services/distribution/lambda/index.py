@@ -97,6 +97,14 @@ def handler(event, context):
     # Get user info from OIDC
     user = get_user_from_oidc_data(headers)
 
+    # Fetch version info from S3
+    version_info = None
+    try:
+        response = s3.get_object(Bucket=BUCKET, Key="downloads/version.json")
+        version_info = json.loads(response["Body"].read().decode("utf-8"))
+    except Exception as e:
+        logger.warning("Could not fetch version.json: %s", e)
+
     # Generate presigned URL for installer
     installer_url = generate_presigned_url("downloads/opencode-installer.zip")
 
@@ -109,8 +117,21 @@ def handler(event, context):
 
     download_section = ""
     if installer_url:
+        version_badge = ""
+        if version_info:
+            ver = version_info.get("latest", "")
+            released = version_info.get("released", "")
+            message = version_info.get("message", "")
+            version_badge = f"""
+            <div class="version-info">
+                <span class="version-badge">v{ver}</span>
+                {f'<span class="version-date">Released {released}</span>' if released else ""}
+            </div>
+            {f'<p class="version-message">{message}</p>' if message else ""}"""
+
         download_section = f'''
         <div class="download-section">
+            {version_badge}
             <a href="{installer_url}" class="download-button">Download opencode-installer.zip</a>
             <p class="download-help">Click to download the installer package</p>
         </div>'''
@@ -201,6 +222,34 @@ def handler(event, context):
         }}
         .no-installer {{
             color: var(--text-muted);
+            font-style: italic;
+        }}
+        .version-info {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }}
+        .version-badge {{
+            display: inline-block;
+            background: var(--accent);
+            color: white;
+            padding: 0.2rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            font-family: 'SF Mono', Monaco, monospace;
+        }}
+        .version-date {{
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }}
+        .version-message {{
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            text-align: center;
+            margin-bottom: 1.25rem;
             font-style: italic;
         }}
         .code-block {{

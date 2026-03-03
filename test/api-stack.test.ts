@@ -131,6 +131,6 @@ test('ApiStack creates 5 listener rules', () => {
   template.resourceCountIs('AWS::ElasticLoadBalancingV2::ListenerRule', 5);
 });
 
-test('ApiStack creates 15 SSM parameters', () => {
-  template.resourceCountIs('AWS::SSM::Parameter', 15);
+test('ApiStack creates 16 SSM parameters', () => {
+  template.resourceCountIs('AWS::SSM::Parameter', 16);
 });

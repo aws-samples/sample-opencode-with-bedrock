@@ -396,7 +396,7 @@ class TestBuildUsage:
         assert result["total_tokens"] == 150
         assert result["cache_read_input_tokens"] == 80
         assert result["cache_creation_input_tokens"] == 20
-        assert result["prompt_tokens_details"]["cached_tokens"] == 80
+        assert result["prompt_tokens_details"]["cached_tokens"] == 80  # type: ignore[index]
 
     def test_build_usage_without_cache_metrics(self):
         """_build_usage should omit cache fields when not present."""
@@ -451,4 +451,4 @@ class TestBuildUsage:
             converse_response, "test-model", "req-cache"
         )
         assert result["usage"]["cache_read_input_tokens"] == 80
-        assert result["usage"]["prompt_tokens_details"]["cached_tokens"] == 80
+        assert result["usage"]["prompt_tokens_details"]["cached_tokens"] == 80  # type: ignore[index]

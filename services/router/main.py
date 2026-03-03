@@ -14,6 +14,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import aiohttp
 import boto3
@@ -451,7 +452,7 @@ def translate_openai_to_converse(body, enable_cache=False):
     return params
 
 
-def _translate_content(content):
+def _translate_content(content) -> list[dict[str, Any]]:
     """Convert OpenAI message content to Converse content blocks."""
     if isinstance(content, str):
         return [{"text": content}] if content else [{"text": ""}]
@@ -625,21 +626,56 @@ async def handle_anthropic_non_streaming(body, request_id):
         return web.json_response(result, headers={"X-Request-ID": request_id})
     except Exception as e:
         error_name = type(e).__name__
-        log.exception(
-            "Converse API call failed",
-            extra={"request_id": request_id, "error": str(e), "type": error_name},
+        error_str = str(e)
+        is_validation = (
+            "ValidationException" in error_name or "ValidationException" in error_str
         )
-        return web.json_response(
-            {
-                "error": {
-                    "message": "An internal error occurred while processing the request.",
-                    "type": "server_error",
-                    "code": "bedrock_error",
-                }
-            },
-            status=502,
-            headers={"X-Request-ID": request_id},
-        )
+
+        if is_validation:
+            log.warning(
+                "Converse validation error",
+                extra={
+                    "request_id": request_id,
+                    "error": error_str,
+                    "type": error_name,
+                },
+            )
+            msg = error_str
+            if "ConverseStream operation: " in msg:
+                msg = msg.split("ConverseStream operation: ")[-1]
+            elif "Converse operation: " in msg:
+                msg = msg.split("Converse operation: ")[-1]
+            return web.json_response(
+                {
+                    "error": {
+                        "message": msg,
+                        "type": "invalid_request_error",
+                        "code": "context_length_exceeded",
+                    }
+                },
+                status=400,
+                headers={"X-Request-ID": request_id},
+            )
+        else:
+            log.exception(
+                "Converse API call failed",
+                extra={
+                    "request_id": request_id,
+                    "error": error_str,
+                    "type": error_name,
+                },
+            )
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "An internal error occurred while processing the request.",
+                        "type": "server_error",
+                        "code": "bedrock_error",
+                    }
+                },
+                status=502,
+                headers={"X-Request-ID": request_id},
+            )
 
 
 async def handle_anthropic_streaming(body, request_id, request):
@@ -670,6 +706,11 @@ async def handle_anthropic_streaming(body, request_id, request):
         _sse_keepalive(response, interval=15, request_id=request_id)
     )
 
+    # Track stream diagnostics for observability
+    stream_start_time = time.time()
+    first_token_time = None
+    stream_started = False
+
     try:
         loop = asyncio.get_event_loop()
         client = get_bedrock_client()
@@ -686,9 +727,20 @@ async def handle_anthropic_streaming(body, request_id, request):
         tool_idx = -1
 
         async for event in _iter_stream_events(stream):
-            # Cancel keepalive after first real event arrives
+            # Cancel keepalive and record time-to-first-token on first event
             if not keepalive_task.cancelled():
                 keepalive_task.cancel()
+                first_token_time = time.time()
+                ttft_ms = int((first_token_time - stream_start_time) * 1000)
+                stream_started = True
+                log.info(
+                    "Stream first event",
+                    extra={
+                        "request_id": request_id,
+                        "model": model,
+                        "time_to_first_token_ms": ttft_ms,
+                    },
+                )
             if "messageStart" in event:
                 chunk = _make_sse_chunk(
                     request_id,
@@ -805,26 +857,83 @@ async def handle_anthropic_streaming(body, request_id, request):
         # Client disconnected — normal when users cancel or proxies time out.
         # Log at WARNING, not ERROR, since this is not a server fault.
         keepalive_task.cancel()
+        elapsed_ms = int((time.time() - stream_start_time) * 1000)
+        ttft_ms = (
+            int((first_token_time - stream_start_time) * 1000)
+            if first_token_time
+            else None
+        )
         log.warning(
             "Client disconnected during stream",
-            extra={"request_id": request_id, "error": str(e), "type": type(e).__name__},
+            extra={
+                "request_id": request_id,
+                "error": str(e),
+                "type": type(e).__name__,
+                "stream_started": stream_started,
+                "elapsed_ms": elapsed_ms,
+                "time_to_first_token_ms": ttft_ms,
+            },
         )
         return response
 
     except Exception as e:
         keepalive_task.cancel()
         error_name = type(e).__name__
-        log.exception(
-            "ConverseStream failed",
-            extra={"request_id": request_id, "error": str(e), "type": error_name},
+        error_str = str(e)
+
+        # Detect Bedrock ValidationException (e.g. prompt too long)
+        is_validation = (
+            "ValidationException" in error_name or "ValidationException" in error_str
         )
+        if is_validation:
+            log.warning(
+                "ConverseStream validation error",
+                extra={
+                    "request_id": request_id,
+                    "error": error_str,
+                    "type": error_name,
+                },
+            )
+        else:
+            log.exception(
+                "ConverseStream failed",
+                extra={
+                    "request_id": request_id,
+                    "error": error_str,
+                    "type": error_name,
+                },
+            )
+
+        # Build an error message that gives the client actionable info.
+        # For ValidationException (prompt too long, etc.) pass through the
+        # Bedrock error so opencode can react (e.g. trigger compaction).
+        if is_validation:
+            # Extract the core message from botocore's verbose string
+            # e.g. "An error occurred (ValidationException) when calling the
+            #        ConverseStream operation: The model returned the following
+            #        errors: prompt is too long: 203265 tokens > 200000 maximum"
+            msg = error_str
+            if ": " in msg:
+                # Take everything after the last colon-space from botocore
+                msg = (
+                    msg.split("ConverseStream operation: ")[-1]
+                    if "ConverseStream operation: " in msg
+                    else msg
+                )
+            error_type = "invalid_request_error"
+            error_code = "context_length_exceeded"
+        else:
+            msg = "An internal error occurred while processing the stream."
+            error_type = "server_error"
+            error_code = "bedrock_error"
+
         # Try to send error as SSE if stream is already started
         try:
             error_chunk = {
                 "error": {
-                    "message": "An internal error occurred while processing the stream.",
-                    "type": "server_error",
-                    "code": "bedrock_error",
+                    "message": msg,
+                    "type": error_type,
+                    "code": error_code,
                 }
             }
             await _write_sse(response, json.dumps(error_chunk))
@@ -943,7 +1052,7 @@ def get_dynamodb_table():
             raise RuntimeError("API_KEYS_TABLE_NAME not configured")
         region = os.environ.get("AWS_REGION", "us-east-1")
         dynamodb = boto3.resource("dynamodb", region_name=region)
-        _dynamodb_table = dynamodb.Table(API_KEYS_TABLE_NAME)
+        _dynamodb_table = dynamodb.Table(API_KEYS_TABLE_NAME)  # type: ignore[attr-defined]
         log.info(
             "Initialized DynamoDB table",
             extra={"table": API_KEYS_TABLE_NAME, "region": region},
@@ -1408,7 +1517,7 @@ async def health(request):
     )
 
 
-async def ready(request):
+async def ready(request: web.Request) -> web.Response:
     """Deep health check - validates token can be generated."""
     try:
         # Try to get a token to ensure IAM permissions are working
@@ -1425,6 +1534,10 @@ async def ready(request):
                     .replace("+00:00", "Z"),
                 }
             )
+        return web.json_response(
+            {"status": "not_ready", "error": "Token generation returned empty"},
+            status=503,
+        )
     except Exception as e:
         log.error("Readiness check failed", extra={"error": str(e)})
         return web.json_response(
@@ -1463,6 +1576,7 @@ async def request_logging_middleware(request, handler):
             "method": request.method,
             "path": request.path,
             "user_agent": request.headers.get("User-Agent", "unknown"),
+            "client_version": request.headers.get("X-Client-Version", ""),
             "auth_source": request.get("auth_source", ""),
             "user_sub": request.get("user_sub", ""),
             "user_email": request.get("user_email", ""),
@@ -1746,7 +1860,7 @@ async def update_download_url(request):
         )
 
 
-async def update_config(request):
+async def update_config(request: web.Request) -> web.Response:
     """Return the config patch for clients to apply."""
     if not DISTRIBUTION_BUCKET:
         return web.json_response(

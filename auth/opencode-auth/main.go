@@ -571,6 +571,11 @@ func runOpenCode(args []string) error {
 	// Apply config file values
 	applyOpenCodeConfig(cfg, openCodeConfig)
 
+	// Enable debug logging if OPENCODE_DEBUG=1 is set
+	if os.Getenv("OPENCODE_DEBUG") == "1" {
+		cfg.Debug = true
+	}
+
 	// Start async version check (non-blocking)
 	type versionResult struct {
 		info     *versionpkg.UpdateInfo
@@ -691,13 +696,32 @@ func runOpenCode(args []string) error {
 				// Hard block: do not launch opencode when below minimum version
 				fmt.Fprintln(os.Stderr, "")
 				fmt.Fprintln(os.Stderr, "══════════════════════════════════════════════════")
-				fmt.Fprintln(os.Stderr, " CLIENT UPDATE REQUIRED")
+				fmt.Fprintln(os.Stderr, " REQUIRED UPDATE")
 				fmt.Fprintln(os.Stderr, "")
-				fmt.Fprintf(os.Stderr, " Your version:     v%s\n", result.info.Current)
-				fmt.Fprintf(os.Stderr, " Minimum required: v%s\n", result.info.Latest)
+				fmt.Fprintf(os.Stderr, "  Your version:     v%s\n", result.info.Current)
+				fmt.Fprintf(os.Stderr, "  Minimum required: v%s\n", result.manifest.Minimum)
+				fmt.Fprintf(os.Stderr, "  Latest version:   v%s\n", result.info.Latest)
+				if result.info.Message != "" {
+					fmt.Fprintf(os.Stderr, "  %s\n", result.info.Message)
+				}
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintln(os.Stderr, "  Your client is too old to connect to the server.")
+				fmt.Fprintln(os.Stderr, "  You must update before continuing.")
 				fmt.Fprintln(os.Stderr, "══════════════════════════════════════════════════")
 				fmt.Fprintln(os.Stderr, "")
-				fmt.Fprintln(os.Stderr, "Attempting auto-update...")
+
+				fmt.Fprint(os.Stderr, "Update now? [Y/n] ")
+				var answer string
+				fmt.Scanln(&answer)
+				answer = strings.TrimSpace(strings.ToLower(answer))
+
+				if answer != "" && answer != "y" && answer != "yes" {
+					fmt.Fprintln(os.Stderr, "Update is required. Run 'opencode-auth update' when ready.")
+					os.Exit(1)
+				}
+
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintln(os.Stderr, "Updating...")
 				if err := runUpdate(false, false); err != nil {
 					fmt.Fprintf(os.Stderr, "Auto-update failed: %v\n\n", err)
 					if result.info.DownloadURL != "" {
@@ -714,19 +738,42 @@ func runOpenCode(args []string) error {
 			}
 			if result.info != nil && versionpkg.ShouldNotify(result.info) {
 				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintln(os.Stderr, "══════════════════════════════════════════════════")
 				if result.info.Critical {
-					fmt.Fprintln(os.Stderr, "*** CRITICAL UPDATE AVAILABLE ***")
-					fmt.Fprintf(os.Stderr, "opencode-auth v%s contains a critical update (current: v%s)\n",
-						result.info.Latest, result.info.Current)
+					fmt.Fprintln(os.Stderr, " *** CRITICAL UPDATE AVAILABLE ***")
 				} else {
-					fmt.Fprintf(os.Stderr, "A new version of opencode-auth is available: v%s (current: v%s)\n",
-						result.info.Latest, result.info.Current)
+					fmt.Fprintln(os.Stderr, " UPDATE AVAILABLE")
 				}
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintf(os.Stderr, "  Current version: v%s\n", result.info.Current)
+				fmt.Fprintf(os.Stderr, "  Latest version:  v%s\n", result.info.Latest)
 				if result.info.Message != "" {
 					fmt.Fprintf(os.Stderr, "  %s\n", result.info.Message)
 				}
-				fmt.Fprintln(os.Stderr, "  Update with: opencode-auth update")
+				fmt.Fprintln(os.Stderr, "══════════════════════════════════════════════════")
 				fmt.Fprintln(os.Stderr, "")
+
+				// Prompt the user: update now or continue?
+				fmt.Fprint(os.Stderr, "Update now? [Y/n] ")
+				var answer string
+				fmt.Scanln(&answer)
+				answer = strings.TrimSpace(strings.ToLower(answer))
+
+				if answer == "" || answer == "y" || answer == "yes" {
+					fmt.Fprintln(os.Stderr, "")
+					fmt.Fprintln(os.Stderr, "Updating...")
+					if err := runUpdate(false, false); err != nil {
+						fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+						fmt.Fprintln(os.Stderr, "Continuing with current version...")
+					} else {
+						fmt.Fprintln(os.Stderr, "Update complete! Run 'oc' to start with the new version.")
+						os.Exit(0)
+					}
+				} else {
+					fmt.Fprintln(os.Stderr, "Skipping update.")
+				}
+				fmt.Fprintln(os.Stderr, "")
+
 				// Dismiss non-critical notifications
 				if !result.info.Critical {
 					_ = versionpkg.DismissVersion(result.info.Latest)
@@ -1170,13 +1217,15 @@ This enables seamless long-running sessions without 401 errors.`,
 
 func proxyStartCmd() *cobra.Command {
 	var foreground bool
+	var debug bool
 
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the authentication proxy",
 		Long: `Starts the local authentication proxy server if not already running.
 
-By default, the proxy runs in the background. Use --foreground to run in the current terminal.`,
+By default, the proxy runs in the background. Use --foreground to run in the current terminal.
+Use --debug or set OPENCODE_DEBUG=1 to enable detailed logging to ~/.opencode/logs/proxy-debug.log.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load config
 			openCodeConfig, err := config.LoadOpenCodeConfig()
@@ -1184,6 +1233,9 @@ By default, the proxy runs in the background. Use --foreground to run in the cur
 				return fmt.Errorf("failed to load config: %w\nRun the installer first: curl -fsSL https://downloads.oc.example.com/install.sh | bash", err)
 			}
 			applyOpenCodeConfig(cfg, openCodeConfig)
+			if debug || os.Getenv("OPENCODE_DEBUG") == "1" {
+				cfg.Debug = true
+			}
 			if err := cfg.DiscoverEndpoints(); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: OIDC endpoint discovery failed: %v\n", err)
 			}
@@ -1235,6 +1287,7 @@ By default, the proxy runs in the background. Use --foreground to run in the cur
 	}
 
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run proxy in foreground (don't detach)")
+	cmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging to ~/.opencode/logs/proxy-debug.log")
 
 	return cmd
 }

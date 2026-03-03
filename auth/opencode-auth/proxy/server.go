@@ -54,7 +54,8 @@ type Server struct {
 	server        *http.Server
 	refresher     *Refresher
 	stopChan      chan struct{}
-	ClientVersion string // injected by main.go — sent as X-Client-Version header
+	ClientVersion string       // injected by main.go — sent as X-Client-Version header
+	debugLog      *DebugLogger // optional debug logger for diagnosing streaming issues
 }
 
 // NewServerWithPort creates a new proxy server instance with a specific port
@@ -92,8 +93,32 @@ func newServerInternal(cfg *config.Config, port int, checkPort bool) (*Server, e
 		stopChan:  make(chan struct{}),
 	}
 
+	// Initialize debug logger (enabled via config.Debug or OPENCODE_DEBUG=1)
+	debugEnabled := cfg.Debug || os.Getenv("OPENCODE_DEBUG") == "1"
+	server.debugLog = NewDebugLogger(cfg.ConfigDir, debugEnabled)
+
 	// Create reverse proxy with timeout configuration
 	reverseProxy := httputil.NewSingleHostReverseProxy(targetURL)
+
+	// Flush immediately on every Write for SSE streaming support.
+	// Without this, SSE keepalive comments and stream chunks may be
+	// buffered in the proxy, causing the upstream client (opencode)
+	// to see a silent connection and time out — especially during
+	// long time-to-first-token waits on Opus thinking requests.
+	reverseProxy.FlushInterval = -1
+
+	// Log proxy-level errors so users can see what went wrong on their end.
+	reverseProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		fmt.Fprintf(os.Stderr, "[proxy] upstream error: %s %s → %v\n", r.Method, r.URL.Path, err)
+		server.debugLog.Log("ERROR upstream %s %s → %v", r.Method, r.URL.Path, err)
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"message": fmt.Sprintf("proxy: upstream connection failed: %v", err),
+				"type":    "proxy_error",
+			},
+		})
+	}
 
 	// Set up transport with timeouts
 	reverseProxy.Transport = &http.Transport{
@@ -221,6 +246,11 @@ func (s *Server) Stop() error {
 		s.refresher.Stop()
 	}
 
+	// Close debug logger
+	if s.debugLog != nil {
+		s.debugLog.Close()
+	}
+
 	// Remove proxy config
 	configPath := filepath.Join(s.config.ConfigDir, proxyConfigFile)
 	os.Remove(configPath)
@@ -239,7 +269,18 @@ func (s *Server) Port() int {
 
 // handleRequest proxies requests to the target API with auth headers
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	s.debugLog.Log("REQ  %s %s content-length=%d", r.Method, r.URL.Path, r.ContentLength)
+
 	s.proxy.ServeHTTP(w, r)
+
+	elapsed := time.Since(start)
+	s.debugLog.Log("DONE %s %s elapsed=%v", r.Method, r.URL.Path, elapsed.Round(time.Millisecond))
+
+	// Log slow requests and errors to help diagnose client-side timeout issues
+	if elapsed > 30*time.Second {
+		fmt.Fprintf(os.Stderr, "[proxy] %s %s completed in %v\n", r.Method, r.URL.Path, elapsed.Round(time.Millisecond))
+	}
 }
 
 // handleHealth returns the proxy health status
@@ -649,7 +690,11 @@ func StartProxy(cfg *config.Config) (*ProxyConfig, error) {
 	// We use a special environment variable to indicate we're the child process
 	if os.Getenv("OPENCODE_AUTH_PROXY_DAEMON") == "" {
 		// Parent process - fork and exit
-		cmd := exec.Command(binaryPath, "proxy", "start", "--foreground")
+		args := []string{"proxy", "start", "--foreground"}
+		if cfg.Debug || os.Getenv("OPENCODE_DEBUG") == "1" {
+			args = append(args, "--debug")
+		}
+		cmd := exec.Command(binaryPath, args...)
 		cmd.Env = append(os.Environ(), "OPENCODE_AUTH_PROXY_DAEMON=1")
 		cmd.Stdout = nil
 		cmd.Stderr = nil

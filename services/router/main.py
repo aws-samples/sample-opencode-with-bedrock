@@ -692,13 +692,16 @@ def _build_usage(usage):
     """Build an OpenAI-compatible usage dict from Converse API usage, including cache metrics."""
     prompt_tok = usage.get("inputTokens", 0)
     completion_tok = usage.get("outputTokens", 0)
+    cache_read = usage.get("cacheReadInputTokens", 0)
+    cache_write = usage.get("cacheWriteInputTokens", 0)
+    # total_tokens must include cache tokens so that OpenCode's compaction logic
+    # (which relies on totalTokens for openai-compatible providers) sees the true
+    # context window usage and can trigger auto-compaction correctly.
     usage_obj = {
         "prompt_tokens": prompt_tok,
         "completion_tokens": completion_tok,
-        "total_tokens": prompt_tok + completion_tok,
+        "total_tokens": prompt_tok + completion_tok + cache_read + cache_write,
     }
-    cache_read = usage.get("cacheReadInputTokens", 0)
-    cache_write = usage.get("cacheWriteInputTokens", 0)
     if cache_read or cache_write:
         usage_obj["prompt_tokens_details"] = {
             "cached_tokens": cache_read,

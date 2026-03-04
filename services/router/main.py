@@ -4,6 +4,7 @@
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import logging
 import os
@@ -22,6 +23,140 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aws_bedrock_token_generator import provide_token
 from botocore.config import Config as BotoConfig
+from PIL import Image
+
+# Explicitly set Pillow decompression bomb limit (~178M pixels).
+# This prevents malicious images from consuming excessive memory during decode.
+Image.MAX_IMAGE_PIXELS = 178_956_970
+
+
+# Maximum image size (bytes) before we resize — Bedrock Converse limit is 3.75 MB per image.
+# Use a conservative threshold to leave room for re-encoding overhead.
+_MAX_IMAGE_BYTES = 3_500_000  # 3.5 MB
+
+# Pixel dimension limits from Anthropic Claude Vision API:
+#   - 1-20 images per request: max 8000px per side
+#   - 21+ images per request:  max 2000px per side
+# See: https://platform.claude.com/docs/en/build-with-claude/vision
+_MAX_DIMENSION_SINGLE = 8000  # ≤20 images
+_MAX_DIMENSION_MANY = 2000  # >20 images
+_MANY_IMAGE_THRESHOLD = 20  # image count that triggers the stricter limit
+
+
+def _maybe_resize_image(
+    image_bytes: bytes, fmt: str, image_count: int = 1
+) -> tuple[bytes, str]:
+    """Resize an image if it exceeds Bedrock Converse API limits.
+
+    Handles two limits:
+    1. File size: 3.75 MB per image
+    2. Pixel dimensions: 2000px max per side when request contains multiple images
+
+    Returns (possibly resized image bytes, format string).
+    Converts PNG to JPEG when compression is needed for better size reduction.
+    Note: animated GIFs lose animation; WebP is converted to JPEG.
+    """
+    original_size = len(image_bytes)
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as e:
+        log.warning(
+            "Rejected decompression bomb image",
+            extra={"error": str(e), "image_bytes": original_size},
+        )
+        raise
+    except Exception as e:
+        log.warning(
+            "Image decode failed, passing through original",
+            extra={"error": str(e), "image_bytes": original_size, "image_format": fmt},
+        )
+        return image_bytes, fmt
+
+    original_dimensions = f"{img.width}x{img.height}"
+
+    # Check if we need dimension capping
+    # >20 images: 2000px limit; ≤20 images: 8000px limit
+    max_dim = (
+        _MAX_DIMENSION_MANY
+        if image_count > _MANY_IMAGE_THRESHOLD
+        else _MAX_DIMENSION_SINGLE
+    )
+    needs_dimension_cap = img.width > max_dim or img.height > max_dim
+    needs_size_reduction = original_size > _MAX_IMAGE_BYTES
+
+    if not needs_dimension_cap and not needs_size_reduction:
+        log.info(
+            "Image received",
+            extra={
+                "image_format": fmt,
+                "image_bytes": original_size,
+                "image_dimensions": original_dimensions,
+                "image_count_in_request": image_count,
+                "max_dimension_allowed": max_dim,
+                "resized": False,
+            },
+        )
+        return image_bytes, fmt
+
+    # Convert RGBA to RGB for JPEG compatibility
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    # Apply dimension cap first if needed
+    if needs_dimension_cap:
+        ratio = min(max_dim / img.width, max_dim / img.height)
+        new_size = (int(img.width * ratio), int(img.height * ratio))
+        img = img.resize(new_size, Image.LANCZOS)
+
+    # Encode as JPEG
+    out_fmt = "jpeg"
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85, optimize=True)
+    result = buf.getvalue()
+
+    # If still too large in bytes, progressively downscale
+    if len(result) > _MAX_IMAGE_BYTES:
+        scale = 0.8
+        current_img = img
+        while len(result) > _MAX_IMAGE_BYTES and scale > 0.2:
+            new_size = (int(current_img.width * scale), int(current_img.height * scale))
+            resized = current_img.resize(new_size, Image.LANCZOS)
+            buf = io.BytesIO()
+            resized.save(buf, format="JPEG", quality=80, optimize=True)
+            result = buf.getvalue()
+            scale -= 0.1
+
+        if len(result) > _MAX_IMAGE_BYTES:
+            log.warning(
+                "Image still exceeds size limit after max downscaling",
+                extra={"resized_bytes": len(result), "max_bytes": _MAX_IMAGE_BYTES},
+            )
+
+    # Get final dimensions from the result
+    final_img = Image.open(io.BytesIO(result))
+    final_dimensions = f"{final_img.width}x{final_img.height}"
+
+    reasons = []
+    if needs_dimension_cap:
+        reasons.append("dimension_cap")
+    if needs_size_reduction:
+        reasons.append("size_reduction")
+
+    log.info(
+        "Image resized",
+        extra={
+            "original_format": fmt,
+            "original_bytes": original_size,
+            "original_dimensions": original_dimensions,
+            "resized_bytes": len(result),
+            "resized_dimensions": final_dimensions,
+            "resized_format": out_fmt,
+            "reasons": reasons,
+            "image_count_in_request": image_count,
+            "resized": True,
+        },
+    )
+    return result, out_fmt
 
 
 # Structured JSON logging for CloudWatch
@@ -299,6 +434,18 @@ def translate_openai_to_converse(body, enable_cache=False, original_model=None):
     """
     messages = body.get("messages", [])
 
+    # Pre-count total images across all messages to determine if
+    # Bedrock's many-image dimension limits (2000px) apply.
+    total_image_count = 0
+    for msg in messages:
+        msg_content = msg.get("content", "")
+        if isinstance(msg_content, list):
+            total_image_count += sum(
+                1
+                for part in msg_content
+                if isinstance(part, dict) and part.get("type") == "image_url"
+            )
+
     # Separate system messages
     system_blocks = []
     converse_messages = []
@@ -344,7 +491,7 @@ def translate_openai_to_converse(body, enable_cache=False, original_model=None):
             continue
 
         # Convert content to Converse format
-        converse_content = _translate_content(content)
+        converse_content = _translate_content(content, total_image_count)
 
         # Strip empty text blocks — Converse API rejects blank text fields.
         # This commonly occurs when a streaming response is interrupted and the
@@ -492,7 +639,7 @@ def translate_openai_to_converse(body, enable_cache=False, original_model=None):
     return params
 
 
-def _translate_content(content) -> list[dict[str, Any]]:
+def _translate_content(content, total_image_count: int = 0) -> list[dict[str, Any]]:
     """Convert OpenAI message content to Converse content blocks."""
     if isinstance(content, str):
         return [{"text": content}] if content else [{"text": ""}]
@@ -520,11 +667,16 @@ def _translate_content(content) -> list[dict[str, Any]]:
                         fmt = media_type.split("/")[-1]
                         if fmt == "jpg":
                             fmt = "jpeg"
+                        raw_bytes = base64.b64decode(b64data)
+                        # Resize if image exceeds Bedrock limits (size or dimensions)
+                        raw_bytes, fmt = _maybe_resize_image(
+                            raw_bytes, fmt, total_image_count
+                        )
                         blocks.append(
                             {
                                 "image": {
                                     "format": fmt,
-                                    "source": {"bytes": base64.b64decode(b64data)},
+                                    "source": {"bytes": raw_bytes},
                                 }
                             }
                         )
@@ -1959,11 +2111,14 @@ async def update_config(request: web.Request) -> web.Response:
 
 # Create application
 app = web.Application(
+    client_max_size=50
+    * 1024
+    * 1024,  # 50 MB — allow large payloads (e.g. Playwright screenshots); Bedrock enforces its own per-image limits
     middlewares=[
         version_gate_middleware,
         api_key_auth_middleware,
         request_logging_middleware,
-    ]
+    ],
 )
 app.router.add_get("/health", health)
 app.router.add_get("/ready", ready)

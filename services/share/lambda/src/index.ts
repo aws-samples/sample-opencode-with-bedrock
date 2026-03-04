@@ -52,6 +52,21 @@ export async function handler(
     if (viewMatch) {
       event.pathParameters = { shareID: viewMatch[1] };
     }
+
+    // Log when we extracted pathParameters from the path (helps debug routing issues)
+    if (event.pathParameters) {
+      console.log("Extracted pathParameters from path:", {
+        rawPath,
+        normalizedPath: path,
+        pathParameters: event.pathParameters,
+      });
+    }
+  } else {
+    console.log("pathParameters provided by API Gateway:", {
+      rawPath,
+      normalizedPath: path,
+      pathParameters: event.pathParameters,
+    });
   }
 
   try {

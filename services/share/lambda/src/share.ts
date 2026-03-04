@@ -125,7 +125,14 @@ export namespace Share {
   }
 
   export async function get(id: string): Promise<Info | undefined> {
-    return Storage.read<Info>(["share", id]);
+    console.log("Share.get: looking up share", { shareId: id, storageKey: `share/${id}.json` });
+    const result = await Storage.read<Info>(["share", id]);
+    if (!result) {
+      console.warn("Share.get: share not found", { shareId: id });
+    } else {
+      console.log("Share.get: share found", { shareId: id, sessionID: result.sessionID });
+    }
+    return result;
   }
 
   export async function remove(body: { id: string; secret: string }): Promise<void> {

@@ -65,7 +65,17 @@ export async function createShareHandler(
       return createResponse(400, { error: "sessionID is required" });
     }
 
+    console.log("createShareHandler: creating share", {
+      sessionID: body.sessionID,
+      derivedId: body.sessionID.slice(-8),
+    });
+
     const share = await Share.create({ sessionID: body.sessionID });
+
+    console.log("createShareHandler: share created", {
+      shareId: share.id,
+      sessionID: share.sessionID,
+    });
 
     // Use configured base URL if available, otherwise derive from request headers
     const baseUrl = process.env.SHARE_VIEWER_BASE_URL
@@ -78,9 +88,15 @@ export async function createShareHandler(
     });
   } catch (error) {
     if (error instanceof Share.Errors.AlreadyExists) {
+      console.warn("createShareHandler: share already exists for different session", {
+        sessionID: parseBody(event).sessionID,
+      });
       return createResponse(409, { error: "Share already exists" });
     }
-    console.error("Error creating share:", error);
+    console.error("Error creating share:", {
+      sessionID: parseBody(event).sessionID,
+      error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : error,
+    });
     return createResponse(500, { error: "Failed to create share" });
   }
 }
@@ -105,6 +121,12 @@ export async function syncShareHandler(
       return createResponse(400, { error: "data array is required" });
     }
 
+    console.log("syncShareHandler: syncing data", {
+      shareID,
+      dataItems: body.data.length,
+      dataTypes: [...new Set(body.data.map((d: any) => d.type))],
+    });
+
     await Share.sync({
       share: { id: shareID, secret: body.secret },
       data: body.data as Share.Data[],
@@ -116,15 +138,21 @@ export async function syncShareHandler(
     return createResponse(200, { success: true });
   } catch (error) {
     if (error instanceof Share.Errors.NotFound) {
+      console.warn("syncShareHandler: share not found", { shareID: event.pathParameters?.shareID });
       return createResponse(404, { error: "Share not found" });
     }
     if (error instanceof Share.Errors.InvalidSecret) {
+      console.warn("syncShareHandler: invalid secret", { shareID: event.pathParameters?.shareID });
       return createResponse(403, { error: "Invalid secret" });
     }
     if (error instanceof Share.Errors.PayloadTooLarge) {
+      console.warn("syncShareHandler: payload too large", { shareID: event.pathParameters?.shareID, message: error.message });
       return createResponse(413, { error: error.message });
     }
-    console.error("Error syncing share:", error);
+    console.error("Error syncing share:", {
+      shareID: event.pathParameters?.shareID,
+      error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : error,
+    });
     return createResponse(500, { error: "Failed to sync share" });
   }
 }
@@ -139,11 +167,23 @@ export async function getShareDataHandler(
   try {
     const shareID = event.pathParameters?.shareID;
     if (!shareID) {
+      console.warn("getShareDataHandler: missing shareID in pathParameters", {
+        pathParameters: event.pathParameters,
+        rawPath: (event as any).rawPath || (event as any).path,
+      });
       return createResponse(400, { error: "shareID is required" });
     }
 
+    console.log("getShareDataHandler: fetching data", { shareID });
+
     const data = await Share.data(shareID);
     const jsonBody = JSON.stringify(data);
+
+    console.log("getShareDataHandler: data retrieved", {
+      shareID,
+      itemCount: data.length,
+      jsonSize: jsonBody.length,
+    });
 
     // Check if client accepts gzip and response is large enough to benefit
     const acceptEncoding = (event.headers?.["accept-encoding"] || "").toLowerCase();
@@ -166,7 +206,10 @@ export async function getShareDataHandler(
 
     return createResponse(200, data);
   } catch (error) {
-    console.error("Error getting share data:", error);
+    console.error("Error getting share data:", {
+      shareID: event.pathParameters?.shareID,
+      error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : error,
+    });
     return createResponse(500, { error: "Failed to get share data" });
   }
 }
@@ -208,13 +251,27 @@ export async function viewShareHandler(
   try {
     const shareID = event.pathParameters?.shareID;
     if (!shareID) {
+      console.warn("viewShareHandler: missing shareID in pathParameters", {
+        pathParameters: event.pathParameters,
+        rawPath: (event as any).rawPath || (event as any).path,
+      });
       return createResponse(400, { error: "shareID is required" });
     }
 
+    console.log("viewShareHandler: looking up share", { shareID });
+
     const share = await Share.get(shareID);
     if (!share) {
+      console.warn("viewShareHandler: share not found, returning 404", {
+        shareID,
+        rawPath: (event as any).rawPath || (event as any).path,
+        userAgent: event.headers?.["user-agent"],
+        sourceIp: (event as any).requestContext?.http?.sourceIp || (event as any).requestContext?.identity?.sourceIp,
+      });
       return createResponse(404, { error: "Share not found" });
     }
+
+    console.log("viewShareHandler: share found, rendering HTML", { shareID, sessionID: share.sessionID });
 
     // Escape shareID to prevent XSS injection
     const safeShareId = escapeForHtml(shareID);
@@ -417,7 +474,10 @@ export async function viewShareHandler(
       body: html,
     };
   } catch (error) {
-    console.error("Error getting share:", error);
+    console.error("Error getting share:", {
+      shareID: event.pathParameters?.shareID,
+      error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : error,
+    });
     return createResponse(500, { error: "Failed to get share" });
   }
 }

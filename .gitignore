@@ -17,11 +17,10 @@ cdk.context.json
 .env
 .env.local
 
-# Distribution assets - these are build artifacts
+# Distribution assets - build artifacts (binaries and installer zip)
+# opencode.json (model config) and opencode-config.json (auth template) are tracked
 services/distribution/assets/opencode-auth-*
 services/distribution/assets/opencode-installer.zip
-services/distribution/assets/opencode.json
-services/distribution/assets/opencode-config.json
 
 # Compiled binaries
 auth/opencode-auth/opencode-auth

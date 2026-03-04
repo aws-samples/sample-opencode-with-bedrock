@@ -452,3 +452,128 @@ class TestBuildUsage:
         )
         assert result["usage"]["cache_read_input_tokens"] == 80
         assert result["usage"]["prompt_tokens_details"]["cached_tokens"] == 80  # type: ignore[index]
+
+
+class TestContext1MModels:
+    """Verify 1M context window model support."""
+
+    def test_1m_models_in_default_map(self):
+        """claude-opus-1m and claude-sonnet-1m variants should be in the default model map."""
+        import main
+
+        model_map = main.DEFAULT_MODEL_MAP
+        assert "claude-opus-1m" in model_map
+        assert "bedrock/claude-opus-1m" in model_map
+        assert "claude-sonnet-1m" in model_map
+        assert "bedrock/claude-sonnet-1m" in model_map
+        # Both should map to the same Bedrock model ID as the standard variant
+        assert model_map["claude-opus-1m"] == "us.anthropic.claude-opus-4-6-v1"
+        assert model_map["bedrock/claude-opus-1m"] == "us.anthropic.claude-opus-4-6-v1"
+        assert model_map["claude-sonnet-1m"] == "us.anthropic.claude-sonnet-4-6"
+        assert model_map["bedrock/claude-sonnet-1m"] == "us.anthropic.claude-sonnet-4-6"
+
+    def test_1m_models_in_context_1m_set(self):
+        """CONTEXT_1M_MODELS set should contain all 1M model names."""
+        import main
+
+        assert "claude-opus-1m" in main.CONTEXT_1M_MODELS
+        assert "bedrock/claude-opus-1m" in main.CONTEXT_1M_MODELS
+        assert "claude-sonnet-1m" in main.CONTEXT_1M_MODELS
+        assert "bedrock/claude-sonnet-1m" in main.CONTEXT_1M_MODELS
+        # Standard models should NOT be in the set
+        assert "claude-opus" not in main.CONTEXT_1M_MODELS
+        assert "bedrock/claude-opus" not in main.CONTEXT_1M_MODELS
+        assert "claude-sonnet" not in main.CONTEXT_1M_MODELS
+        assert "bedrock/claude-sonnet" not in main.CONTEXT_1M_MODELS
+
+    def test_beta_flag_injected_for_1m_model(self):
+        """translate_openai_to_converse should inject anthropic_beta for 1M models."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-6-v1",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="claude-opus-1m"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert "anthropic_beta" in additional
+        assert "context-1m-2025-08-07" in additional["anthropic_beta"]
+
+    def test_beta_flag_injected_for_bedrock_prefixed_1m_model(self):
+        """translate_openai_to_converse should inject anthropic_beta for bedrock/ prefixed 1M models."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-6-v1",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="bedrock/claude-opus-1m"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert "anthropic_beta" in additional
+        assert "context-1m-2025-08-07" in additional["anthropic_beta"]
+
+    def test_beta_flag_injected_for_sonnet_1m_model(self):
+        """translate_openai_to_converse should inject anthropic_beta for sonnet 1M models."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="claude-sonnet-1m"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert "anthropic_beta" in additional
+        assert "context-1m-2025-08-07" in additional["anthropic_beta"]
+
+    def test_no_beta_flag_for_standard_model(self):
+        """translate_openai_to_converse should NOT inject anthropic_beta for standard models."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-6-v1",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="claude-opus"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert "anthropic_beta" not in additional
+
+    def test_no_beta_flag_when_original_model_is_none(self):
+        """translate_openai_to_converse should not inject beta flag when original_model is None."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-6-v1",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model=None
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert "anthropic_beta" not in additional
+
+    def test_beta_flag_coexists_with_thinking(self):
+        """anthropic_beta should coexist with thinking in additionalModelRequestFields."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-6-v1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"budget_tokens": 5000},
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="claude-opus-1m"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        # Both thinking and anthropic_beta should be present
+        assert "thinking" in additional
+        assert additional["thinking"]["budget_tokens"] == 5000
+        assert "anthropic_beta" in additional
+        assert "context-1m-2025-08-07" in additional["anthropic_beta"]

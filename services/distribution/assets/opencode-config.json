@@ -1,0 +1,7 @@
+{
+  "client_id": "{{CLIENT_ID}}",
+  "api_endpoint": "https://{{API_DOMAIN}}/v1",
+  "issuer": "{{ISSUER}}",
+  "version_check_url": "https://{{WEB_DOMAIN}}/version.json",
+  "share_endpoint": "{{SHARE_DOMAIN}}"
+}

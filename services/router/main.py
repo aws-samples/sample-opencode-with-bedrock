@@ -191,8 +191,12 @@ DEFAULT_MODEL_MAP = {
     # Anthropic (Converse API path)
     "claude-opus": "us.anthropic.claude-opus-4-6-v1",
     "bedrock/claude-opus": "us.anthropic.claude-opus-4-6-v1",
+    "claude-opus-1m": "us.anthropic.claude-opus-4-6-v1",
+    "bedrock/claude-opus-1m": "us.anthropic.claude-opus-4-6-v1",
     "claude-sonnet": "us.anthropic.claude-sonnet-4-6",
     "bedrock/claude-sonnet": "us.anthropic.claude-sonnet-4-6",
+    "claude-sonnet-1m": "us.anthropic.claude-sonnet-4-6",
+    "bedrock/claude-sonnet-1m": "us.anthropic.claude-sonnet-4-6",
     "claude-sonnet-45": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "bedrock/claude-sonnet-45": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     # Moonshot AI (Mantle path)
@@ -213,6 +217,17 @@ DEFAULT_MODEL_MAP = {
     # Qwen / Alibaba (Mantle path)
     "qwen3-coder": "qwen.qwen3-coder-next",
     "bedrock/qwen3-coder": "qwen.qwen3-coder-next",
+}
+
+# Models that require the 1M context window beta flag.
+# When these model names are requested, the router injects
+# "anthropic_beta": ["context-1m-2025-08-07"] into additionalModelRequestFields
+# so that Bedrock enables the extended 1M token context window.
+CONTEXT_1M_MODELS = {
+    "claude-opus-1m",
+    "bedrock/claude-opus-1m",
+    "claude-sonnet-1m",
+    "bedrock/claude-sonnet-1m",
 }
 
 _model_map = None
@@ -273,8 +288,15 @@ def get_bedrock_client():
     return _bedrock_client
 
 
-def translate_openai_to_converse(body, enable_cache=False):
-    """Convert an OpenAI chat-completion request body to Bedrock Converse API params."""
+def translate_openai_to_converse(body, enable_cache=False, original_model=None):
+    """Convert an OpenAI chat-completion request body to Bedrock Converse API params.
+
+    Args:
+        body: OpenAI-format request body (with model already mapped to Bedrock ID).
+        enable_cache: Whether to inject cachePoint hints for prompt caching.
+        original_model: The pre-mapped model name from the client request.
+            Used to determine whether to inject the 1M context beta flag.
+    """
     messages = body.get("messages", [])
 
     # Separate system messages
@@ -455,6 +477,15 @@ def translate_openai_to_converse(body, enable_cache=False):
             "budget_tokens": budget,
         }
 
+    # Inject 1M context beta flag for models that require the extended context window.
+    # Without this flag, Bedrock limits the context to 200K tokens even though the
+    # model supports up to 1M. See:
+    # https://aws.amazon.com/about-aws/whats-new/2026/2/claude-opus-4.6-available-amazon-bedrock/
+    if original_model in CONTEXT_1M_MODELS:
+        beta_list = additional_fields.get("anthropic_beta", [])
+        beta_list.append("context-1m-2025-08-07")
+        additional_fields["anthropic_beta"] = beta_list
+
     if additional_fields:
         params["additionalModelRequestFields"] = additional_fields
 
@@ -601,11 +632,13 @@ def _map_stop_reason(stop_reason):
     return mapping.get(stop_reason, "stop")
 
 
-async def handle_anthropic_non_streaming(body, request_id):
+async def handle_anthropic_non_streaming(body, request_id, original_model=None):
     """Call Converse API (non-streaming) in an executor thread."""
     loop = asyncio.get_event_loop()
     model = body["model"]
-    params = translate_openai_to_converse(body, enable_cache=True)
+    params = translate_openai_to_converse(
+        body, enable_cache=True, original_model=original_model
+    )
 
     log.info(
         "Calling Converse API",
@@ -687,10 +720,12 @@ async def handle_anthropic_non_streaming(body, request_id):
             )
 
 
-async def handle_anthropic_streaming(body, request_id, request):
+async def handle_anthropic_streaming(body, request_id, request, original_model=None):
     """Call ConverseStream API, translate events to OpenAI SSE format."""
     model = body["model"]
-    params = translate_openai_to_converse(body, enable_cache=True)
+    params = translate_openai_to_converse(
+        body, enable_cache=True, original_model=original_model
+    )
 
     log.info(
         "Calling ConverseStream API",
@@ -1680,9 +1715,13 @@ async def chat_completions(request):
             },
         )
         if is_stream:
-            return await handle_anthropic_streaming(body, request_id, request)
+            return await handle_anthropic_streaming(
+                body, request_id, request, original_model=requested
+            )
         else:
-            return await handle_anthropic_non_streaming(body, request_id)
+            return await handle_anthropic_non_streaming(
+                body, request_id, original_model=requested
+            )
 
     # ---- All other models → Mantle proxy (unchanged) ----
 

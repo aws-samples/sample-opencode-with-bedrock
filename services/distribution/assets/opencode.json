@@ -1,0 +1,235 @@
+{
+  "$schema": "https://opencode.ai/schema/config.json",
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 20000
+  },
+  "provider": {
+    "bedrock": {
+      "name": "Bedrock Models",
+      "options": {
+        "baseURL": "http://localhost:18080/v1"
+      },
+      "models": {
+        "claude-opus": {
+          "name": "Claude Opus 4.6",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 5,
+            "output": 25,
+            "cache_read": 0.5,
+            "cache_write": 6.25
+          },
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
+        },
+        "claude-opus-1m": {
+          "name": "Claude Opus 4.6 (1M)",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 5,
+            "output": 25,
+            "cache_read": 0.5,
+            "cache_write": 6.25,
+            "context_over_200k": {
+              "input": 10,
+              "output": 37.5,
+              "cache_read": 1,
+              "cache_write": 12.5
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "claude-sonnet": {
+          "name": "Claude Sonnet 4.6",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 3,
+            "output": 15,
+            "cache_read": 0.3,
+            "cache_write": 3.75
+          },
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          }
+        },
+        "claude-sonnet-1m": {
+          "name": "Claude Sonnet 4.6 (1M)",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 3,
+            "output": 15,
+            "cache_read": 0.3,
+            "cache_write": 3.75,
+            "context_over_200k": {
+              "input": 6,
+              "output": 22.5,
+              "cache_read": 0.6,
+              "cache_write": 7.5
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "kimi-k25": {
+          "name": "Kimi K2.5",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 0.6,
+            "output": 3
+          },
+          "limit": {
+            "context": 256000,
+            "output": 256000
+          },
+          "options": {
+            "separate_reasoning": true,
+            "chat_template_kwargs": {
+              "thinking": true
+            }
+          }
+        },
+        "deepseek-v3": {
+          "name": "DeepSeek V3.2",
+          "attachment": false,
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 0,
+            "output": 0
+          },
+          "limit": {
+            "context": 128000,
+            "output": 64000
+          }
+        },
+        "minimax-m2": {
+          "name": "MiniMax M2.1",
+          "attachment": false,
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "reasoning": false,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 0.3,
+            "output": 1.2
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "glm-4": {
+          "name": "GLM 4.7",
+          "attachment": false,
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 0.6,
+            "output": 2.2
+          },
+          "limit": {
+            "context": 128000,
+            "output": 64000
+          }
+        },
+        "glm-4-flash": {
+          "name": "GLM 4.7 Flash",
+          "attachment": false,
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "reasoning": false,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 0.07,
+            "output": 0.4
+          },
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "qwen3-coder": {
+          "name": "Qwen3 Coder Next",
+          "attachment": false,
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 0,
+            "output": 0
+          },
+          "limit": {
+            "context": 256000,
+            "output": 64000
+          }
+        }
+      }
+    }
+  },
+  "model": "bedrock/claude-opus"
+}

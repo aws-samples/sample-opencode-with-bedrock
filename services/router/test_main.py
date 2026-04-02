@@ -391,9 +391,12 @@ class TestBuildUsage:
             "cacheWriteInputTokens": 20,
         }
         result = main._build_usage(usage)
-        assert result["prompt_tokens"] == 100
+        # prompt_tokens must include cache_read to match OpenAI API standard
+        assert result["prompt_tokens"] == 180  # 100 (non-cached) + 80 (cache_read)
         assert result["completion_tokens"] == 50
-        assert result["total_tokens"] == 150
+        assert (
+            result["total_tokens"] == 250
+        )  # 180 (prompt) + 50 (completion) + 20 (cache_write)
         assert result["cache_read_input_tokens"] == 80
         assert result["cache_creation_input_tokens"] == 20
         assert result["prompt_tokens_details"]["cached_tokens"] == 80  # type: ignore[index]
@@ -427,6 +430,29 @@ class TestBuildUsage:
         result = main._build_usage(usage)
         assert "cache_read_input_tokens" not in result
         assert "prompt_tokens_details" not in result
+
+    def test_build_usage_high_cache_no_negative_cost(self):
+        """prompt_tokens must always >= cached_tokens to prevent negative cost.
+
+        Bedrock reports inputTokens as non-cached only, while cacheReadInputTokens
+        can be much larger in long sessions.  _build_usage must combine them so
+        that clients computing (prompt_tokens - cached_tokens) never go negative.
+        """
+        import main
+
+        usage = {
+            "inputTokens": 500,
+            "outputTokens": 100,
+            "cacheReadInputTokens": 50000,
+            "cacheWriteInputTokens": 0,
+        }
+        result = main._build_usage(usage)
+        assert result["prompt_tokens"] == 50500  # 500 + 50000
+        assert result["prompt_tokens_details"]["cached_tokens"] == 50000
+        # The invariant: prompt_tokens >= cached_tokens (prevents negative cost)
+        assert (
+            result["prompt_tokens"] >= result["prompt_tokens_details"]["cached_tokens"]
+        )
 
     def test_converse_response_with_cache_usage(self):
         """translate_converse_to_openai should surface cache metrics in usage."""

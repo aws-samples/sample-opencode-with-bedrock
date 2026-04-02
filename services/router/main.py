@@ -694,13 +694,17 @@ def _build_usage(usage):
     completion_tok = usage.get("outputTokens", 0)
     cache_read = usage.get("cacheReadInputTokens", 0)
     cache_write = usage.get("cacheWriteInputTokens", 0)
-    # total_tokens must include cache tokens so that OpenCode's compaction logic
-    # (which relies on totalTokens for openai-compatible providers) sees the true
-    # context window usage and can trigger auto-compaction correctly.
+    # Per the OpenAI API standard, prompt_tokens must be the TOTAL input token
+    # count (non-cached + cached).  Bedrock reports inputTokens as only the
+    # non-cached portion, so we add cacheReadInputTokens to match the standard.
+    # Without this, clients that compute (prompt_tokens - cached_tokens) to
+    # derive non-cached input cost will get a negative value when cached_tokens
+    # exceeds the raw inputTokens, producing a negative "spent" price.
+    total_prompt = prompt_tok + cache_read
     usage_obj = {
-        "prompt_tokens": prompt_tok,
+        "prompt_tokens": total_prompt,
         "completion_tokens": completion_tok,
-        "total_tokens": prompt_tok + completion_tok + cache_read + cache_write,
+        "total_tokens": total_prompt + completion_tok + cache_write,
     }
     if cache_read or cache_write:
         usage_obj["prompt_tokens_details"] = {

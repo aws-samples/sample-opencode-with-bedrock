@@ -567,6 +567,8 @@ class TestHandleAnthropicStreaming:
 
         usage_chunks = [d for d in sse_data if d.get("usage")]
         assert len(usage_chunks) >= 1
-        assert usage_chunks[0]["usage"]["prompt_tokens"] == 50
+        assert (
+            usage_chunks[0]["usage"]["prompt_tokens"] == 90
+        )  # 50 (non-cached) + 40 (cache_read)
         assert usage_chunks[0]["usage"]["completion_tokens"] == 25
         assert usage_chunks[0]["usage"]["cache_read_input_tokens"] == 40

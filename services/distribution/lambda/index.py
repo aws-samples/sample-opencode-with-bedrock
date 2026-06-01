@@ -375,22 +375,29 @@ cd opencode-installer</code></pre>
 
             <h3 style="font-size: 1rem; margin: 1.5rem 0 0.75rem; color: var(--text);">Available Models</h3>
             <p style="margin-bottom: 1rem; color: var(--text-muted);">
-                This distribution includes three Bedrock models:
+                This distribution includes the following Bedrock models:
             </p>
             <ul style="margin: 0 0 1rem 1.5rem; color: var(--text-muted);">
-                <li><strong>Claude Opus 4.6</strong> (<code>bedrock/claude-opus</code>)</li>
+                <li><strong>Claude Opus 4.8</strong> (<code>bedrock/claude-opus-48</code>)</li>
+                <li><strong>Claude Opus 4.7</strong> (<code>bedrock/claude-opus-47</code>)</li>
+                <li><strong>Claude Opus 4.6</strong> (<code>bedrock/claude-opus-46</code>)</li>
                 <li><strong>Claude Sonnet 4.6</strong> (<code>bedrock/claude-sonnet</code>)</li>
                 <li><strong>Kimi K2.5</strong> (<code>bedrock/kimi-k25</code>)</li>
+                <li><strong>DeepSeek V3.2</strong> (<code>bedrock/deepseek-v3</code>)</li>
+                <li><strong>MiniMax M2.1</strong> (<code>bedrock/minimax-m2</code>)</li>
+                <li><strong>GLM 4.7</strong> (<code>bedrock/glm-4</code>)</li>
+                <li><strong>GLM 4.7 Flash</strong> (<code>bedrock/glm-4-flash</code>)</li>
+                <li><strong>Qwen3 Coder Next</strong> (<code>bedrock/qwen3-coder</code>)</li>
             </ul>
 
             <h3 style="font-size: 1rem; margin: 1.5rem 0 0.75rem; color: var(--text);">Default Model</h3>
             <p style="margin-bottom: 1rem; color: var(--text-muted);">
-                The default model is <strong>Claude Opus 4.6</strong>. OpenCode selects the default based on:
+                The default model is <strong>Claude Opus 4.7</strong>. OpenCode selects the default based on:
             </p>
             <ol style="margin: 0 0 1rem 1.5rem; color: var(--text-muted);">
                 <li>Config file: <code>model</code> key in <code>opencode.json</code></li>
                 <li>Last used model from previous session</li>
-                <li>Distribution default (Claude Opus 4.6)</li>
+                <li>Distribution default (Claude Opus 4.7)</li>
             </ol>
 
             <h3 style="font-size: 1rem; margin: 1.5rem 0 0.75rem; color: var(--text);">Changing Models</h3>

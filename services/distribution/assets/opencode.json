@@ -12,7 +12,7 @@
         "baseURL": "http://localhost:18080/v1"
       },
       "models": {
-        "claude-opus": {
+        "claude-opus-46": {
           "name": "Claude Opus 4.6",
           "attachment": true,
           "modalities": {
@@ -29,13 +29,13 @@
             "cache_write": 6.25
           },
           "limit": {
-            "context": 200000,
-            "input": 200000,
-            "output": 32000
+            "context": 1000000,
+            "input": 1000000,
+            "output": 128000
           }
         },
-        "claude-opus-1m": {
-          "name": "Claude Opus 4.6 (1M)",
+        "claude-opus-47": {
+          "name": "Claude Opus 4.7",
           "attachment": true,
           "modalities": {
             "input": ["text", "image"],
@@ -48,13 +48,29 @@
             "input": 5,
             "output": 25,
             "cache_read": 0.5,
-            "cache_write": 6.25,
-            "context_over_200k": {
-              "input": 10,
-              "output": 37.5,
-              "cache_read": 1,
-              "cache_write": 12.5
-            }
+            "cache_write": 6.25
+          },
+          "limit": {
+            "context": 1000000,
+            "input": 1000000,
+            "output": 128000
+          }
+        },
+        "claude-opus-48": {
+          "name": "Claude Opus 4.8",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 5,
+            "output": 25,
+            "cache_read": 0.5,
+            "cache_write": 6.25
           },
           "limit": {
             "context": 1000000,
@@ -77,34 +93,6 @@
             "output": 15,
             "cache_read": 0.3,
             "cache_write": 3.75
-          },
-          "limit": {
-            "context": 200000,
-            "input": 200000,
-            "output": 64000
-          }
-        },
-        "claude-sonnet-1m": {
-          "name": "Claude Sonnet 4.6 (1M)",
-          "attachment": true,
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          },
-          "reasoning": true,
-          "temperature": true,
-          "tool_call": true,
-          "cost": {
-            "input": 3,
-            "output": 15,
-            "cache_read": 0.3,
-            "cache_write": 3.75,
-            "context_over_200k": {
-              "input": 6,
-              "output": 22.5,
-              "cache_read": 0.6,
-              "cache_write": 7.5
-            }
           },
           "limit": {
             "context": 1000000,
@@ -235,5 +223,5 @@
       }
     }
   },
-  "model": "bedrock/claude-opus"
+  "model": "bedrock/claude-opus-47"
 }

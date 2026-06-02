@@ -371,6 +371,32 @@ CONTEXT_1M_MODELS = {
     "bedrock/claude-sonnet-1m",
 }
 
+# Models that require the newer "adaptive" thinking shape instead of the legacy
+# "enabled" + budget_tokens shape. Claude Opus 4.7+ reject
+# additionalModelRequestFields.thinking.type == "enabled" and instead expect
+# thinking.type == "adaptive" plus output_config.effort to control reasoning.
+ADAPTIVE_THINKING_MODELS = {
+    "claude-opus-47",
+    "bedrock/claude-opus-47",
+    "claude-opus-48",
+    "bedrock/claude-opus-48",
+}
+
+# Map OpenAI-style reasoning_effort / thinking budget to the discrete effort
+# levels accepted by output_config.effort on adaptive-thinking models.
+def _effort_from_request(body) -> str:
+    effort = body.get("reasoning_effort")
+    if isinstance(effort, str) and effort.lower() in ("low", "medium", "high"):
+        return effort.lower()
+    budget = (body.get("thinking") or {}).get("budget_tokens")
+    if isinstance(budget, int):
+        if budget <= 4096:
+            return "low"
+        if budget <= 16384:
+            return "medium"
+        return "high"
+    return "medium"
+
 _model_map = None
 
 
@@ -623,12 +649,20 @@ def translate_openai_to_converse(body, enable_cache=False, original_model=None):
     additional_fields = {}
     # Check for reasoning/thinking configuration
     if body.get("reasoning_effort") or body.get("thinking"):
-        thinking_config = body.get("thinking", {})
-        budget = thinking_config.get("budget_tokens", 10000)
-        additional_fields["thinking"] = {
-            "type": "enabled",
-            "budget_tokens": budget,
-        }
+        if original_model in ADAPTIVE_THINKING_MODELS:
+            # Newer Claude Opus (4.7+) reject the legacy "enabled" shape and
+            # require adaptive thinking with output_config.effort.
+            additional_fields["thinking"] = {"type": "adaptive"}
+            additional_fields["output_config"] = {
+                "effort": _effort_from_request(body)
+            }
+        else:
+            thinking_config = body.get("thinking", {})
+            budget = thinking_config.get("budget_tokens", 10000)
+            additional_fields["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": budget,
+            }
 
     # Inject 1M context beta flag for models that require the extended context window.
     # Without this flag, Bedrock limits the context to 200K tokens even though the

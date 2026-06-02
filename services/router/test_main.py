@@ -603,3 +603,68 @@ class TestContext1MModels:
         assert additional["thinking"]["budget_tokens"] == 5000
         assert "anthropic_beta" in additional
         assert "context-1m-2025-08-07" in additional["anthropic_beta"]
+
+    def test_opus_48_uses_adaptive_thinking(self):
+        """Opus 4.8 must use adaptive thinking + output_config.effort, not enabled."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-8",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "reasoning_effort": "low",
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="bedrock/claude-opus-48"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert additional["thinking"] == {"type": "adaptive"}
+        assert additional["output_config"]["effort"] == "low"
+        assert "budget_tokens" not in additional["thinking"]
+
+    def test_opus_47_maps_budget_to_effort(self):
+        """Opus 4.7 maps legacy budget_tokens to a discrete effort level."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-7",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"budget_tokens": 20000},
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="claude-opus-47"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert additional["thinking"]["type"] == "adaptive"
+        assert additional["output_config"]["effort"] == "high"
+
+    def test_opus_46_keeps_legacy_enabled_thinking(self):
+        """Opus 4.6 must keep the legacy enabled + budget_tokens shape."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-6-v1",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "thinking": {"budget_tokens": 5000},
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="claude-opus-46"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert additional["thinking"]["type"] == "enabled"
+        assert additional["thinking"]["budget_tokens"] == 5000
+        assert "output_config" not in additional
+
+    def test_opus_48_no_thinking_when_not_requested(self):
+        """No thinking/output_config when reasoning is not requested."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-8",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="bedrock/claude-opus-48"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert "thinking" not in additional
+        assert "output_config" not in additional

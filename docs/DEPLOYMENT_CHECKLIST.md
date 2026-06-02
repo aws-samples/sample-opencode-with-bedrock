@@ -148,6 +148,29 @@ aws logs tail /ecs/bedrock-router-dev --follow
 ```
 Common cause: container image not pushed. Run `./scripts/deploy.sh build-image`.
 
+### Deploy fails with `No hosted zone found with ID: example.com`
+The CDK app reads `hostedZoneId`, `hostedZoneName`, `certificateDomain`, `apiDomain`, `webDomain`, and `shareDomain` from CDK context and falls back to `example.com` placeholders when they are not set. If your `cdk.context.json` is missing these domain keys (or you never created it from `cdk.context.json.example`), the deploy proceeds with the placeholders and then fails when it tries to create DNS records in a hosted zone that doesn't exist.
+
+Fix by ensuring the domain keys are present in `cdk.context.json`:
+```bash
+cp cdk.context.json.example cdk.context.json   # if you haven't already
+# then edit hostedZoneId / hostedZoneName / *Domain to match your Route 53 zone
+```
+
+Alternatively, pass them inline for a single deploy (overrides `cdk.context.json`):
+```bash
+./scripts/deploy.sh \
+  -c hostedZoneId=Z0123456789ABCDEFGHIJ \
+  -c hostedZoneName=example.com \
+  -c certificateDomain='*.oc.example.com' \
+  -c apiDomain=oc.example.com \
+  -c webDomain=downloads.oc.example.com \
+  -c shareDomain=share.oc.example.com \
+  api
+```
+
+A failed update rolls back automatically; if a new router image was already pushed to ECR, re-running the deploy with the correct domain context applies it without rebuilding.
+
 ### ALB health checks failing
 Check ECS task status and security group rules. Ensure the router container is running and listening on the expected port.
 

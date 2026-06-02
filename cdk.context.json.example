@@ -5,6 +5,7 @@
   "certificateDomain": "*.oc.example.com",
   "apiDomain": "oc.example.com",
   "webDomain": "downloads.oc.example.com",
+  "shareDomain": "share.oc.example.com",
 
   "_comment_cognito": "For Cognito mode (default):",
   "authProvider": "cognito",

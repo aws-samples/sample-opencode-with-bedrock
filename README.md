@@ -240,7 +240,8 @@ Set in `cdk.json` or via command line:
     "hostedZoneName": "example.com",
     "certificateDomain": "*.oc.example.com",
     "apiDomain": "oc.example.com",
-    "webDomain": "downloads.oc.example.com"
+    "webDomain": "downloads.oc.example.com",
+    "shareDomain": "share.oc.example.com"
   }
 }
 ```

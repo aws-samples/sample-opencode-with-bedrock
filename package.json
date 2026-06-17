@@ -28,7 +28,7 @@
     "zod": "^4.3.6"
   },
   "dependencies": {
-    "aws-cdk-lib": "^2.240.0",
+    "aws-cdk-lib": "^2.260.0",
     "cdk-nag": "^2.37.55",
     "constructs": "^10.0.0"
   }

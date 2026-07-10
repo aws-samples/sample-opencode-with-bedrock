@@ -408,7 +408,17 @@ build_router_image() {
     fi
 
     log_info "Building container image with $CONTAINER_BUILDER (linux/amd64)..."
-    $CONTAINER_BUILDER build --platform linux/amd64 -t bedrock-router .
+    # For Docker/buildx, disable provenance and SBOM attestations so the push
+    # produces a single image manifest instead of an OCI image index. Amazon
+    # Inspector cannot scan image indexes with attestation manifests (fails with
+    # UnsupportedImageError), so this keeps the pushed image scannable for CVE
+    # remediation verification. Finch/nerdctl does not attach these attestations
+    # by default and does not reliably support the flags, so only pass them for Docker.
+    local build_attestation_flags=""
+    if [ "$CONTAINER_BUILDER" = "docker" ]; then
+        build_attestation_flags="--provenance=false --sbom=false"
+    fi
+    $CONTAINER_BUILDER build --platform linux/amd64 $build_attestation_flags -t bedrock-router .
 
     log_info "Logging into ECR..."
     aws ecr get-login-password --region "$AWS_REGION" | $CONTAINER_BUILDER login --username AWS --password-stdin "${ecr_uri%%/*}"

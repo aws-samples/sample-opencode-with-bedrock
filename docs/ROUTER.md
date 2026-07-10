@@ -57,7 +57,7 @@ The router runs on ECS Fargate with:
 - **Memory**: 1024 MiB
 - **Platform**: Linux/X86_64
 - **Auto-scaling**: 1-3 tasks, scales at 70% CPU utilization (60s cooldown)
-- **Runtime**: Python 3.14 with aiohttp
+- **Runtime**: Python 3.12 with aiohttp (Amazon Linux 2023 base image)
 
 ### Environment Variables
 

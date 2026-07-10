@@ -201,7 +201,9 @@ npx cdk deploy OpenCodeDistribution-dev # Phase 4: Distribution
 Using Docker (default):
 ```bash
 cd services/router
-docker build -t bedrock-router .
+# --provenance=false --sbom=false pushes a single image manifest (not an OCI
+# image index with attestations) so Amazon Inspector can scan it for CVEs.
+docker build --provenance=false --sbom=false -t bedrock-router .
 aws ecr get-login-password | docker login --username AWS --password-stdin 123456789012.dkr.ecr.us-east-1.amazonaws.com
 docker tag bedrock-router:latest 123456789012.dkr.ecr.us-east-1.amazonaws.com/bedrock-router-dev:latest
 docker push 123456789012.dkr.ecr.us-east-1.amazonaws.com/bedrock-router-dev:latest

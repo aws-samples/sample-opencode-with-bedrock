@@ -66,6 +66,11 @@ export class AuthStack extends cdk.Stack {
         requireDigits: true,
         requireSymbols: true,
       },
+      // Threat protection (FULL_FUNCTION) requires the PLUS feature plan.
+      // Without featurePlan: PLUS, the pool defaults to ESSENTIALS and the
+      // deployment fails with "Threat Protection must be disabled for the
+      // ESSENTIALS pricing tier". Note: PLUS incurs additional per-MAU cost.
+      featurePlan: cognito.FeaturePlan.PLUS,
       standardThreatProtectionMode: cognito.StandardThreatProtectionMode.FULL_FUNCTION,
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
       removalPolicy: props.environment === 'prod'

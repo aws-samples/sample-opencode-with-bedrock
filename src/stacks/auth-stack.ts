@@ -13,10 +13,6 @@ export interface AuthStackProps extends cdk.StackProps {
   // Cognito mode props
   cognitoDomainPrefix?: string;
   appDomainName?: string;
-  idpName?: string;
-  idpIssuer?: string;
-  idpClientId?: string;
-  idpClientSecret?: string;
 
   // External mode props — pre-configured OIDC provider
   oidcIssuer?: string;

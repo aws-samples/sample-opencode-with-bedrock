@@ -9,10 +9,6 @@
 
   "_comment_cognito": "For Cognito mode (default):",
   "authProvider": "cognito",
-  "idpName": "YourIdP",
-  "idpIssuer": "https://your-idp-issuer.example.com",
-  "idpClientId": "your-idp-client-id",
-  "idpClientSecret": "your-idp-client-secret",
 
   "_comment_external": "For external OIDC provider mode (uncomment and replace cognito vars above):",
   "_authProvider": "external",

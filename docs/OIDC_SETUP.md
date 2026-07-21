@@ -34,13 +34,14 @@ flowchart LR
 
 Deploys an AWS Cognito User Pool that can federate to an external IdP (e.g., corporate SSO). Cognito handles the hosted UI and token management.
 
-> **Important:** IdP client credentials are secrets and must be passed via environment variables, not `-c` context flags. Context flags are stored in `cdk.context.json` and may be visible in logs.
+> **Important:** IdP inputs (client ID, provider name, issuer, and the client secret) are stored in AWS — non-secret config in SSM Parameter Store and the client secret in Secrets Manager — and read by the AuthStack at deploy time. They are never passed as environment variables or `-c` context flags.
 
 ```bash
-# Non-secret values via -c flags; secrets via env vars
-IDP_CLIENT_ID=your-client-id \
-IDP_CLIENT_SECRET=your-client-secret \
-./scripts/deploy.sh -c idpName=CorporateSSO -c idpIssuer=https://sso.example.com
+# Provision the IdP inputs into AWS once (see docs/IDP-FEDERATION.md):
+./scripts/bootstrap-idp.sh <env> <client-id> CorporateSSO https://sso.example.com <client-secret>
+
+# then deploy normally:
+./scripts/deploy.sh
 ```
 
 ### Mode 2: External OIDC Provider

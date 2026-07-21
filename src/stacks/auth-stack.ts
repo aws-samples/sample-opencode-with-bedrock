@@ -13,10 +13,6 @@ export interface AuthStackProps extends cdk.StackProps {
   // Cognito mode props
   cognitoDomainPrefix?: string;
   appDomainName?: string;
-  idpName?: string;
-  idpIssuer?: string;
-  idpClientId?: string;
-  idpClientSecret?: string;
 
   // External mode props — pre-configured OIDC provider
   oidcIssuer?: string;
@@ -110,59 +106,85 @@ export class AuthStack extends cdk.Stack {
       `https://downloads.${props.appDomainName}/`,
     ];
 
-    // Identity Provider (fully configurable — no defaults)
+    // Identity Provider — external IdP inputs are sourced from AWS, not from
+    // environment variables or cdk.context.json. This keeps all IdP inputs in
+    // one durable, team-accessible place (bus-factor safe) and follows the
+    // standard secrets-vs-config split:
+    //   - non-secret config -> SSM Parameter Store (/opencode/<env>/idp/*)
+    //   - client secret      -> Secrets Manager, via a CloudFormation dynamic
+    //                           reference (never inlined into the template)
     //
-    // Intent to federate is declared by idpName/idpIssuer (persistent config,
-    // typically in cdk.context.json). The client credentials are supplied via
-    // environment variables (IDP_CLIENT_ID / IDP_CLIENT_SECRET) so secrets are
-    // never committed. Because the creds come from the environment, they can
-    // silently go missing (e.g. a fresh shell or agent that never sourced .env).
+    // Federation is DECLARED by the presence of idp/name + idp/issuer. Because
+    // the secret is a dynamic reference, the IdP resource is always rendered
+    // when federation is declared, so it can never be silently deleted by a
+    // deploy that happens to be missing a credential.
     //
-    // If we let a deploy proceed in that state, CDK would DELETE the existing
-    // identity provider and revert every app client to native Cognito
-    // username/password login — an outage. So: if federation is declared but
-    // the credentials are absent, fail loudly at synth before any resource is
-    // touched, rather than silently tearing federation down.
+    // IMPORTANT: pass an explicit defaultValue to valueFromLookup. Without a
+    // default, valueFromLookup sets mustExist=true, which makes the context
+    // lookup HARD-FAIL if the parameter does not exist in the account. That
+    // would break the "no federation configured" path for adopters who never
+    // provision idp/*. With a default supplied, a missing/uncached param
+    // resolves to that default instead of erroring, so we can detect "not
+    // configured" gracefully. We use the natural "dummy-value-for-<name>"
+    // sentinel that valueFromLookup itself uses, and treat it as unconfigured.
+    const NOT_SET = 'dummy-value-for-';
+    const idpClientId = ssm.StringParameter.valueFromLookup(
+      this,
+      `/opencode/${props.environment}/idp/client-id`,
+      `${NOT_SET}/opencode/${props.environment}/idp/client-id`
+    );
+    const idpName = ssm.StringParameter.valueFromLookup(
+      this,
+      `/opencode/${props.environment}/idp/name`,
+      `${NOT_SET}/opencode/${props.environment}/idp/name`
+    );
+    const idpIssuer = ssm.StringParameter.valueFromLookup(
+      this,
+      `/opencode/${props.environment}/idp/issuer`,
+      `${NOT_SET}/opencode/${props.environment}/idp/issuer`
+    );
+
+    // Treat the sentinel placeholder (param missing / not yet in cached
+    // context) as "not configured".
+    const isResolved = (v: string): boolean =>
+      Boolean(v) && !v.startsWith(NOT_SET);
+
+    const nameConfigured = isResolved(idpName);
+    const issuerConfigured = isResolved(idpIssuer);
+    const idpDeclared = nameConfigured || issuerConfigured;
+
     let identityProvider: cognito.CfnUserPoolIdentityProvider | undefined;
 
-    const idpDeclared = Boolean(props.idpName || props.idpIssuer);
-    const idpCredsProvided = Boolean(props.idpClientId || props.idpClientSecret);
-
-    if (idpDeclared || idpCredsProvided) {
-      if (!props.idpName || !props.idpIssuer) {
+    if (idpDeclared) {
+      if (!nameConfigured || !issuerConfigured) {
         throw new Error(
-          'IdP federation is partially configured: idpName and idpIssuer must ' +
-          'both be set. Configure them in cdk.context.json ' +
-          '(e.g. idpName=Okta, idpIssuer=https://your-org.okta.com/oauth2/default), ' +
-          'or remove all IdP settings to deploy with native Cognito login.'
+          'IdP federation is partially configured: both ' +
+          `/opencode/${props.environment}/idp/name and ` +
+          `/opencode/${props.environment}/idp/issuer must be set in SSM ` +
+          'Parameter Store. Provision both (see docs/IDP-FEDERATION.md) or ' +
+          'remove them to deploy with native Cognito login.'
         );
       }
-      if (!props.idpClientId || !props.idpClientSecret) {
+      if (!isResolved(idpClientId)) {
         throw new Error(
-          `Refusing to deploy: IdP federation is configured (idpName="${props.idpName}", ` +
-          'idpIssuer is set) but IDP_CLIENT_ID / IDP_CLIENT_SECRET are not present ' +
-          'in the environment.\n\n' +
-          'Deploying now would DELETE the existing identity provider and revert ' +
-          'all app clients to native Cognito username/password login.\n\n' +
-          'To deploy WITH federation: export IDP_CLIENT_ID and IDP_CLIENT_SECRET ' +
-          '(e.g. source your .env) and re-run.\n' +
-          'To intentionally REMOVE federation: delete idpName and idpIssuer from ' +
-          'cdk.context.json, then re-run.'
+          'IdP federation is configured (idp/name and idp/issuer are set) but ' +
+          `/opencode/${props.environment}/idp/client-id is missing from SSM ` +
+          'Parameter Store. Provision it (see docs/IDP-FEDERATION.md).'
         );
       }
-    }
 
-    const idpName = props.idpName;
-    const idpIssuer = props.idpIssuer;
+      // Client secret via CloudFormation dynamic reference (versionless, to
+      // support rotation without template changes). Never inlined; not logged.
+      const clientSecretRef =
+        `{{resolve:secretsmanager:opencode/${props.environment}/idp/client-secret:SecretString}}`;
 
-    if (props.idpClientId && props.idpClientSecret && idpName && idpIssuer) {
       identityProvider = new cognito.CfnUserPoolIdentityProvider(this, 'OidcProvider', {
         userPoolId: userPool.userPoolId,
         providerName: idpName,
         providerType: 'OIDC',
         providerDetails: {
-          client_id: props.idpClientId,
-          client_secret: props.idpClientSecret,
+          client_id: idpClientId,
+          client_secret: clientSecretRef,
           oidc_issuer: idpIssuer,
           authorize_scopes: 'openid email profile',
           attributes_request_method: 'GET',
@@ -177,7 +199,7 @@ export class AuthStack extends cdk.Stack {
       });
     }
 
-    const supportedProviders = identityProvider && idpName ? [idpName] : ['COGNITO'];
+    const supportedProviders = identityProvider ? [idpName] : ['COGNITO'];
 
     // ALB Client (with secret for ALB OIDC auth)
     const albClient = new cognito.CfnUserPoolClient(this, 'AlbClient', {

@@ -106,15 +106,20 @@ describe('AuthStack — Cognito mode with IdP federation', () => {
 
   beforeAll(() => {
     const app = new cdk.App();
+    const ctx = (name: string, value: string) =>
+      app.node.setContext(
+        `ssm:account=${testEnv.account}:parameterName=${name}:region=${testEnv.region}`,
+        value
+      );
+    ctx('/opencode/test/idp/client-id', 'test-client-id');
+    ctx('/opencode/test/idp/name', 'Okta');
+    ctx('/opencode/test/idp/issuer', 'https://dev-example.okta.com/oauth2/default');
+
     const stack = new AuthStack(app, 'TestAuthCognitoIdp', {
       environment: 'test',
       provider: 'cognito',
       cognitoDomainPrefix: 'opencode-test',
       appDomainName: 'oc.example.com',
-      idpName: 'Okta',
-      idpIssuer: 'https://dev-example.okta.com/oauth2/default',
-      idpClientId: 'test-client-id',
-      idpClientSecret: 'test-client-secret',
       env: testEnv,
     });
     template = Template.fromStack(stack);
@@ -122,6 +127,18 @@ describe('AuthStack — Cognito mode with IdP federation', () => {
 
   test('creates a User Pool Identity Provider', () => {
     template.resourceCountIs('AWS::Cognito::UserPoolIdentityProvider', 1);
+  });
+
+  test('IdP client_secret is a Secrets Manager dynamic reference (never inlined)', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPoolIdentityProvider', {
+      ProviderName: 'Okta',
+      ProviderDetails: Match.objectLike({
+        client_id: 'test-client-id',
+        client_secret:
+          '{{resolve:secretsmanager:opencode/test/idp/client-secret:SecretString}}',
+        oidc_issuer: 'https://dev-example.okta.com/oauth2/default',
+      }),
+    });
   });
 
   test('creates User Pool and clients alongside IdP', () => {
@@ -196,39 +213,44 @@ describe('AuthStack — Error cases', () => {
     }).toThrow('cognitoDomainPrefix and appDomainName are required for cognito provider');
   });
 
-  test('throws when IdP federation is declared (idpName/idpIssuer) but credentials are missing', () => {
+  test('throws when idp/name is set without idp/issuer (partial config)', () => {
     expect(() => {
       const app = new cdk.App();
-      new AuthStack(app, 'TestAuthIdpNoCreds', {
-        environment: 'test',
-        provider: 'cognito',
-        cognitoDomainPrefix: 'opencode-test',
-        appDomainName: 'oc.example.com',
-        idpName: 'Midway',
-        idpIssuer: 'https://idp.federate.amazon.com',
-        // idpClientId / idpClientSecret intentionally omitted (simulates a
-        // deploy where .env was never sourced) — must fail, not silently
-        // strip the identity provider.
-        env: testEnv,
-      });
-    }).toThrow('Refusing to deploy: IdP federation is configured');
-  });
-
-  test('throws when only idpName is set without idpIssuer', () => {
-    expect(() => {
-      const app = new cdk.App();
+      app.node.setContext(
+        `ssm:account=${testEnv.account}:parameterName=/opencode/test/idp/name:region=${testEnv.region}`,
+        'Okta'
+      );
       new AuthStack(app, 'TestAuthIdpPartial', {
         environment: 'test',
         provider: 'cognito',
         cognitoDomainPrefix: 'opencode-test',
         appDomainName: 'oc.example.com',
-        idpName: 'Midway',
         env: testEnv,
       });
-    }).toThrow('idpName and idpIssuer must');
+    }).toThrow('IdP federation is partially configured');
   });
 
-  test('does NOT throw and uses native Cognito when no IdP settings are provided', () => {
+  test('throws when name+issuer are set but client-id is missing', () => {
+    expect(() => {
+      const app = new cdk.App();
+      const ctx = (name: string, value: string) =>
+        app.node.setContext(
+          `ssm:account=${testEnv.account}:parameterName=${name}:region=${testEnv.region}`,
+          value
+        );
+      ctx('/opencode/test/idp/name', 'Okta');
+      ctx('/opencode/test/idp/issuer', 'https://dev-example.okta.com/oauth2/default');
+      new AuthStack(app, 'TestAuthIdpNoClientId', {
+        environment: 'test',
+        provider: 'cognito',
+        cognitoDomainPrefix: 'opencode-test',
+        appDomainName: 'oc.example.com',
+        env: testEnv,
+      });
+    }).toThrow('/opencode/test/idp/client-id is missing');
+  });
+
+  test('does NOT throw and uses native Cognito when no IdP params are set', () => {
     expect(() => {
       const app = new cdk.App();
       const stack = new AuthStack(app, 'TestAuthNoIdp', {

@@ -48,5 +48,8 @@ docs/features/
 # Architecture Decision Records (local reference)
 docs/adr/
 
+# Superpowers specs and implementation plans (internal working docs)
+docs/superpowers/
+
 # Agent instructions (contains internal context)
 AGENTS.md

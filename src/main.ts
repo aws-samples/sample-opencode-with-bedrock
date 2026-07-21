@@ -75,10 +75,6 @@ const authStack = new AuthStack(app, `OpenCodeAuth-${environment}`, {
   // Cognito mode props
   cognitoDomainPrefix: `opencode-${environment}`,
   appDomainName: apiDomain,
-  idpName: app.node.tryGetContext('idpName') || undefined,
-  idpIssuer: app.node.tryGetContext('idpIssuer') || undefined,
-  idpClientId: process.env.IDP_CLIENT_ID || undefined,
-  idpClientSecret: process.env.IDP_CLIENT_SECRET || undefined,
 
   // External mode props
   oidcIssuer: app.node.tryGetContext('oidcIssuer') || undefined,

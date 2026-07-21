@@ -28,8 +28,9 @@ Main deployment script that orchestrates the deployment of all stacks in the cor
 ./scripts/deploy.sh -e prod all
 ENVIRONMENT=staging ./scripts/deploy.sh
 
-# Deploy with IdP federation (secrets via env vars)
-IDP_CLIENT_ID=xxx IDP_CLIENT_SECRET=yyy ./scripts/deploy.sh
+# Deploy with IdP federation (provision inputs into AWS once, then deploy)
+./scripts/bootstrap-idp.sh <env> <client-id> <provider-name> <issuer-url> <client-secret>
+./scripts/deploy.sh
 
 # Build and push router image only
 ./scripts/deploy.sh build-image
@@ -67,8 +68,11 @@ IDP_CLIENT_ID=xxx IDP_CLIENT_SECRET=yyy ./scripts/deploy.sh
 - `AWS_REGION` - AWS region (default: us-east-1)
 - `AWS_PROFILE` - AWS profile to use
 - `CONTAINER_BUILDER` - Container tool to use: `docker` (default) or `finch`
-- `IDP_CLIENT_ID` - IdP client ID for Cognito federation (secret)
-- `IDP_CLIENT_SECRET` - IdP client secret for Cognito federation (secret)
+
+> **IdP federation:** IdP inputs (client ID, provider name, issuer, client secret) are
+> no longer passed via `IDP_CLIENT_ID`/`IDP_CLIENT_SECRET` env vars. They are provisioned
+> into AWS (SSM Parameter Store + Secrets Manager) via `scripts/bootstrap-idp.sh` and read
+> by the AuthStack at deploy time. See `docs/IDP-FEDERATION.md`.
 
 ### Prerequisites
 
@@ -174,4 +178,18 @@ finch build -t bedrock-router .
 aws ecr get-login-password --region us-east-1 | finch login --username AWS --password-stdin <account>.dkr.ecr.us-east-1.amazonaws.com
 finch tag bedrock-router:latest <ecr-uri>:latest
 finch push <ecr-uri>:latest
+```
+
+## bootstrap-idp.sh
+
+Provisions external IdP (OIDC federation) inputs into AWS for an environment. Writes the
+non-secret config (client ID, provider name, issuer) to SSM Parameter Store and the client
+secret to Secrets Manager. Run once per environment (and again to update values); the
+AuthStack reads these at deploy time — no env vars or `-c` flags required. See
+`docs/IDP-FEDERATION.md`.
+
+### Usage
+
+```bash
+./scripts/bootstrap-idp.sh <env> <client-id> <provider-name> <issuer-url> <client-secret>
 ```

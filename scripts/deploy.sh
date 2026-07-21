@@ -326,19 +326,17 @@ deploy_auth() {
     log_info "Deploying Auth (OIDC Configuration)"
     log_info "======================================"
 
-    # Validate IdP credentials if idpName is configured in cdk.json
+    # IdP federation is configured entirely in AWS (SSM Parameter Store +
+    # Secrets Manager) and read by the AuthStack at deploy time. See
+    # docs/IDP-FEDERATION.md. Here we just surface whether it's provisioned.
     local idp_name
-    idp_name=$(cd "$PROJECT_DIR" && node -e "const c=require('./cdk.json').context; console.log(c.idpName||'')" 2>/dev/null) || true
-    if [ -n "$idp_name" ]; then
-        if [ -z "$IDP_CLIENT_ID" ] || [ -z "$IDP_CLIENT_SECRET" ]; then
-            log_error "cdk.json has idpName='$idp_name' but IDP_CLIENT_ID and/or IDP_CLIENT_SECRET env vars are not set."
-            log_error "IdP federation will NOT be configured without these credentials."
-            log_error ""
-            log_error "Deploy with:"
-            log_error "  IDP_CLIENT_ID=<client-id> IDP_CLIENT_SECRET=<client-secret> ./scripts/deploy.sh"
-            exit 1
-        fi
-        log_info "IdP federation: $idp_name (credentials provided)"
+    idp_name=$(aws ssm get-parameter \
+        --name "/opencode/${ENVIRONMENT}/idp/name" \
+        --query 'Parameter.Value' --output text 2>/dev/null) || true
+    if [ -n "$idp_name" ] && [ "$idp_name" != "None" ]; then
+        log_info "IdP federation: $idp_name (sourced from SSM + Secrets Manager)"
+    else
+        log_info "No IdP federation configured (native Cognito). To enable, run scripts/bootstrap-idp.sh — see docs/IDP-FEDERATION.md"
     fi
 
     deploy_stack "Auth Stack" "OpenCodeAuth-${ENVIRONMENT}"
@@ -688,15 +686,15 @@ Examples:
   $0 share                          # Build share Lambdas + deploy ShareStack
   $0 -c enableShareFeature=true all # Full deploy with share enabled
 
-  # Deploy with IdP federation (secrets via env vars):
-  IDP_CLIENT_ID=xxx IDP_CLIENT_SECRET=yyy $0 -c idpName=YourIdP -c idpIssuer=https://your-idp-issuer.example.com
+  # IdP federation is provisioned once into AWS (SSM + Secrets Manager):
+  ./scripts/bootstrap-idp.sh <env> <client-id> <provider-name> <issuer-url> <client-secret>
+  # then deploy normally:
+  $0
 
 Environment Variables:
   ENVIRONMENT         Environment name (default: dev)
   AWS_REGION          AWS region (default: us-east-1)
   AWS_PROFILE         AWS profile to use
-  IDP_CLIENT_ID       IdP client ID for Cognito federation (secret — do not pass via -c)
-  IDP_CLIENT_SECRET   IdP client secret for Cognito federation (secret — do not pass via -c)
 
 EOF
 }

@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 ENVIRONMENT="${ENVIRONMENT:-dev}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+export AWS_REGION="${AWS_REGION:-us-east-1}"
 
 # Colors
 RED='\033[0;31m'
@@ -130,10 +130,17 @@ case $AUTH_MODE in
             print_warning "$DISCOVERY_URL is not reachable (may require VPN or internal network)"
         fi
 
-        # Non-secret values pass as CDK context flags; secrets pass as env vars
-        CDK_DEPLOY_FLAGS="$CDK_DEPLOY_FLAGS -c idpName=${IDP_NAME} -c idpIssuer=${IDP_ISSUER}"
-        export IDP_CLIENT_ID
-        export IDP_CLIENT_SECRET
+        # Provision IdP inputs into AWS (SSM + Secrets Manager). The AuthStack
+        # reads them at deploy time — no env vars or -c flags needed.
+        echo ""
+        print_warning "This will write IdP config to SSM Parameter Store and Secrets Manager in your AWS account NOW (region: ${AWS_REGION:-us-east-1})."
+        read -rp "Provision these values now? [y/N] " provision_confirm
+        if [[ ! "$provision_confirm" =~ ^[Yy]$ ]]; then
+            print_error "Aborted before writing to AWS. Re-run when ready, or use scripts/bootstrap-idp.sh manually."
+            exit 1
+        fi
+        print_info "Provisioning IdP inputs into AWS..."
+        "$SCRIPT_DIR/bootstrap-idp.sh" "${ENVIRONMENT:-dev}" "$IDP_CLIENT_ID" "$IDP_NAME" "$IDP_ISSUER" "$IDP_CLIENT_SECRET"
         ;;
 
     external)
@@ -442,17 +449,8 @@ echo ""
 echo -e "${BOLD}--- Ready to Deploy ---${NC}"
 echo ""
 
-if [ -n "$IDP_CLIENT_ID" ]; then
-    echo "Deploy command:"
-    echo -e "  ${CYAN}IDP_CLIENT_ID=<your-client-id> \\\\${NC}"
-    echo -e "  ${CYAN}IDP_CLIENT_SECRET=<your-client-secret> \\\\${NC}"
-    echo -e "  ${CYAN}./scripts/deploy.sh ${CDK_DEPLOY_FLAGS}${NC}"
-    echo ""
-    echo -e "  (Secrets are passed via env vars, not CLI args)"
-else
-    echo "Deploy command:"
-    echo -e "  ${CYAN}./scripts/deploy.sh ${CDK_DEPLOY_FLAGS}${NC}"
-fi
+echo "Deploy command:"
+echo -e "  ${CYAN}./scripts/deploy.sh ${CDK_DEPLOY_FLAGS}${NC}"
 echo ""
 
 read -rp "Would you like to deploy now? [y/N] " deploy_now
@@ -462,7 +460,7 @@ if [[ "$deploy_now" =~ ^[Yy]$ ]]; then
     print_info "Starting deployment..."
     echo ""
 
-    # Secrets are already exported as env vars (IDP_CLIENT_ID, IDP_CLIENT_SECRET)
+    # IdP inputs (if any) were provisioned into AWS above; no secrets needed at deploy time.
     # Non-secret context flags are passed via -c
     # shellcheck disable=SC2086
     exec "$SCRIPT_DIR/deploy.sh" $CDK_DEPLOY_FLAGS

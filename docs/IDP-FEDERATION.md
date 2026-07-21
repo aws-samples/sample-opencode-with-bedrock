@@ -64,10 +64,23 @@ configured, reads `idp/client-id`, and references the secret via a
 CloudFormation dynamic reference — the secret value is never inlined into the
 template.
 
+> **Region:** provision the values in the same AWS region you deploy the stack
+> to. `bootstrap-idp.sh` writes to `${AWS_REGION:-us-east-1}`, and the stack
+> resolves the Secrets Manager reference in its own deploy region — a mismatch
+> surfaces as a CloudFormation "cannot resolve secret" error at deploy time.
+
 ## Disabling federation
 
-Delete the `idp/*` SSM params (and optionally the secret), then redeploy. With
-no `idp/name`/`idp/issuer`, the stack falls back to native Cognito login.
+1. Delete the `idp/*` SSM params (and optionally the secret) from AWS.
+2. Clear the cached lookup values so CDK re-reads them (otherwise the next
+   synth uses the stale cached values from `cdk.context.json`):
+
+   ```bash
+   npx cdk context --clear
+   ```
+
+3. Redeploy. With no `idp/name`/`idp/issuer` resolvable, the stack falls back
+   to native Cognito login.
 
 ## Recovery / bus-factor
 

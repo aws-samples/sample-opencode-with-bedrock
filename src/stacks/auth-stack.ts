@@ -111,18 +111,43 @@ export class AuthStack extends cdk.Stack {
     ];
 
     // Identity Provider (fully configurable — no defaults)
+    //
+    // Intent to federate is declared by idpName/idpIssuer (persistent config,
+    // typically in cdk.context.json). The client credentials are supplied via
+    // environment variables (IDP_CLIENT_ID / IDP_CLIENT_SECRET) so secrets are
+    // never committed. Because the creds come from the environment, they can
+    // silently go missing (e.g. a fresh shell or agent that never sourced .env).
+    //
+    // If we let a deploy proceed in that state, CDK would DELETE the existing
+    // identity provider and revert every app client to native Cognito
+    // username/password login — an outage. So: if federation is declared but
+    // the credentials are absent, fail loudly at synth before any resource is
+    // touched, rather than silently tearing federation down.
     let identityProvider: cognito.CfnUserPoolIdentityProvider | undefined;
-    if (props.idpClientId || props.idpClientSecret) {
+
+    const idpDeclared = Boolean(props.idpName || props.idpIssuer);
+    const idpCredsProvided = Boolean(props.idpClientId || props.idpClientSecret);
+
+    if (idpDeclared || idpCredsProvided) {
       if (!props.idpName || !props.idpIssuer) {
         throw new Error(
-          'idpName and idpIssuer are required when idpClientId/idpClientSecret are provided. ' +
-          'Example: -c idpName=Okta -c idpIssuer=https://your-org.okta.com/oauth2/default'
+          'IdP federation is partially configured: idpName and idpIssuer must ' +
+          'both be set. Configure them in cdk.context.json ' +
+          '(e.g. idpName=Okta, idpIssuer=https://your-org.okta.com/oauth2/default), ' +
+          'or remove all IdP settings to deploy with native Cognito login.'
         );
       }
       if (!props.idpClientId || !props.idpClientSecret) {
         throw new Error(
-          'Both idpClientId and idpClientSecret are required for IdP federation. ' +
-          'Provide both or neither.'
+          `Refusing to deploy: IdP federation is configured (idpName="${props.idpName}", ` +
+          'idpIssuer is set) but IDP_CLIENT_ID / IDP_CLIENT_SECRET are not present ' +
+          'in the environment.\n\n' +
+          'Deploying now would DELETE the existing identity provider and revert ' +
+          'all app clients to native Cognito username/password login.\n\n' +
+          'To deploy WITH federation: export IDP_CLIENT_ID and IDP_CLIENT_SECRET ' +
+          '(e.g. source your .env) and re-run.\n' +
+          'To intentionally REMOVE federation: delete idpName and idpIssuer from ' +
+          'cdk.context.json, then re-run.'
         );
       }
     }

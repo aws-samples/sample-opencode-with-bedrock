@@ -195,4 +195,51 @@ describe('AuthStack — Error cases', () => {
       });
     }).toThrow('cognitoDomainPrefix and appDomainName are required for cognito provider');
   });
+
+  test('throws when IdP federation is declared (idpName/idpIssuer) but credentials are missing', () => {
+    expect(() => {
+      const app = new cdk.App();
+      new AuthStack(app, 'TestAuthIdpNoCreds', {
+        environment: 'test',
+        provider: 'cognito',
+        cognitoDomainPrefix: 'opencode-test',
+        appDomainName: 'oc.example.com',
+        idpName: 'Midway',
+        idpIssuer: 'https://idp.federate.amazon.com',
+        // idpClientId / idpClientSecret intentionally omitted (simulates a
+        // deploy where .env was never sourced) — must fail, not silently
+        // strip the identity provider.
+        env: testEnv,
+      });
+    }).toThrow('Refusing to deploy: IdP federation is configured');
+  });
+
+  test('throws when only idpName is set without idpIssuer', () => {
+    expect(() => {
+      const app = new cdk.App();
+      new AuthStack(app, 'TestAuthIdpPartial', {
+        environment: 'test',
+        provider: 'cognito',
+        cognitoDomainPrefix: 'opencode-test',
+        appDomainName: 'oc.example.com',
+        idpName: 'Midway',
+        env: testEnv,
+      });
+    }).toThrow('idpName and idpIssuer must');
+  });
+
+  test('does NOT throw and uses native Cognito when no IdP settings are provided', () => {
+    expect(() => {
+      const app = new cdk.App();
+      const stack = new AuthStack(app, 'TestAuthNoIdp', {
+        environment: 'test',
+        provider: 'cognito',
+        cognitoDomainPrefix: 'opencode-test',
+        appDomainName: 'oc.example.com',
+        env: testEnv,
+      });
+      const t = Template.fromStack(stack);
+      t.resourceCountIs('AWS::Cognito::UserPoolIdentityProvider', 0);
+    }).not.toThrow();
+  });
 });

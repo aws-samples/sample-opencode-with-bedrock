@@ -29,7 +29,7 @@ Main deployment script that orchestrates the deployment of all stacks in the cor
 ENVIRONMENT=staging ./scripts/deploy.sh
 
 # Deploy with IdP federation (provision inputs into AWS once, then deploy)
-./scripts/bootstrap-idp.sh dev <client-id> <provider-name> <issuer-url> <client-secret>
+./scripts/bootstrap-idp.sh <env> <client-id> <provider-name> <issuer-url> <client-secret>
 ./scripts/deploy.sh
 
 # Build and push router image only

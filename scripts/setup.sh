@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 ENVIRONMENT="${ENVIRONMENT:-dev}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+export AWS_REGION="${AWS_REGION:-us-east-1}"
 
 # Colors
 RED='\033[0;31m'
@@ -132,9 +132,15 @@ case $AUTH_MODE in
 
         # Provision IdP inputs into AWS (SSM + Secrets Manager). The AuthStack
         # reads them at deploy time — no env vars or -c flags needed.
+        echo ""
+        print_warning "This will write IdP config to SSM Parameter Store and Secrets Manager in your AWS account NOW (region: ${AWS_REGION:-us-east-1})."
+        read -rp "Provision these values now? [y/N] " provision_confirm
+        if [[ ! "$provision_confirm" =~ ^[Yy]$ ]]; then
+            print_error "Aborted before writing to AWS. Re-run when ready, or use scripts/bootstrap-idp.sh manually."
+            exit 1
+        fi
         print_info "Provisioning IdP inputs into AWS..."
         "$SCRIPT_DIR/bootstrap-idp.sh" "${ENVIRONMENT:-dev}" "$IDP_CLIENT_ID" "$IDP_NAME" "$IDP_ISSUER" "$IDP_CLIENT_SECRET"
-        IDP_CONFIGURED=1
         ;;
 
     external)

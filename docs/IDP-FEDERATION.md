@@ -19,20 +19,45 @@ These are **inputs describing your external IdP**, distinct from the
 
 ## Enabling federation
 
-1. Register an OIDC client with your IdP. The redirect/callback URI is your
-   Cognito hosted-UI domain:
+The IdP's redirect URI points at the Cognito hosted-UI domain, which is created
+by the AuthStack. If you have not deployed yet, there is a small ordering
+nuance — deploy once to create the domain, then wire up the IdP:
+
+1. **Deploy the AuthStack once** (native Cognito, no federation yet) so the
+   Cognito hosted-UI domain exists:
+
+   ```bash
+   npx cdk deploy OpenCodeAuth-<env>
+   ```
+
+   `<env>` is your environment name (e.g. `dev`). After deploy, find the
+   Cognito domain and region in the stack's SSM outputs:
+
+   ```bash
+   aws ssm get-parameter --name /opencode/<env>/oidc/issuer --query Parameter.Value --output text
+   ```
+
+   The hosted-UI domain has the form
+   `https://<cognito-domain>.auth.<region>.amazoncognito.com`.
+
+2. **Register an OIDC client with your IdP**, using this redirect/callback URI:
    `https://<cognito-domain>.auth.<region>.amazoncognito.com/oauth2/idpresponse`
-2. Provision the four values into AWS (one-time):
+   Your IdP gives you a client ID and client secret.
+
+3. **Provision the four values into AWS** (one-time):
 
    ```bash
    ./scripts/bootstrap-idp.sh <env> <client-id> <provider-name> <issuer-url> <client-secret>
    ```
 
-3. Deploy the auth stack:
+4. **Re-deploy the AuthStack** to attach federation:
 
    ```bash
    npx cdk deploy OpenCodeAuth-<env>
    ```
+
+Once `idp/name` and `idp/issuer` are present, the AuthStack renders the
+identity provider and points both app clients at it.
 
 The AuthStack reads `idp/name` + `idp/issuer` to detect that federation is
 configured, reads `idp/client-id`, and references the secret via a
@@ -56,7 +81,7 @@ aws secretsmanager get-secret-value \
 ```
 
 If the secret is lost, regenerate it from your IdP's client registration and
-re-run `bootstrap-idp.sh`. Keep the IdP client registration owned by a team
+re-run `./scripts/bootstrap-idp.sh`. Keep the IdP client registration owned by a team
 group (not an individual) so it is always regenerable.
 
 ## Guard behavior

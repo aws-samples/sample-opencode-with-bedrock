@@ -1,6 +1,6 @@
 # OpenCode Stack
 
-A streamlined, ECS-based infrastructure for serving Kimi K2.5 and Claude models (Opus 4.6, Sonnet 4.5) via AWS Bedrock.
+A streamlined, ECS-based infrastructure for serving Claude models (Opus and Sonnet), Kimi K2.5, and other models via AWS Bedrock.
 
 ## Architecture Overview
 
@@ -48,7 +48,7 @@ flowchart TB
 
     subgraph Bedrock["AWS Bedrock"]
         Route -->|"Anthropic Models<br>→ Converse API"| Converse["Bedrock<br>Converse API"]
-        Route -->|"Kimi Models<br>→ Mantle"| Mantle["Bedrock<br>Mantle"]
+        Route -->|"Other Models<br>→ Mantle"| Mantle["Bedrock<br>Mantle"]
     end
 
     style OpenCode fill:#e3f2fd
@@ -66,7 +66,7 @@ flowchart TB
 ## Key Features
 
 - **ECS Fargate**: Containerized router service (no EC2 management)
-- **Multi-Model Support**: Kimi K2.5, Claude Opus 4.6, and Claude Sonnet 4.5 via Bedrock
+- **Multi-Model Support**: Claude (Opus & Sonnet), Kimi K2.5, DeepSeek, MiniMax, GLM, and Qwen via Bedrock
 - **Dual Routing**: Bedrock Converse API for Anthropic models, Bedrock Mantle for others
 - **Dual ALB Setup**: JWT validation for API, OIDC for browser traffic
 - **API Key Authentication**: Long-lived keys for CI/CD and automation (no browser required)
@@ -165,9 +165,9 @@ Use the deployment script for a fully automated deployment:
 # Deploy everything
 ./scripts/deploy.sh
 
-# Or deploy specific phases
-./scripts/deploy.sh phase1  # Foundation
-./scripts/deploy.sh phase4  # Router only
+# Or deploy specific stacks
+./scripts/deploy.sh network  # Network + Certificate
+./scripts/deploy.sh api      # API / Router only
 ```
 
 See [scripts/README.md](scripts/README.md) for detailed usage.
@@ -278,16 +278,16 @@ curl -X POST https://oc.example.com/v1/chat/completions \
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 
-# Claude Opus 4.6
+# Claude Opus 5
 curl -X POST https://oc.example.com/v1/chat/completions \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-opus",
+    "model": "claude-opus-5",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 
-# Claude Sonnet 4.5
+# Claude Sonnet
 curl -X POST https://oc.example.com/v1/chat/completions \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -H "Content-Type: application/json" \
@@ -301,7 +301,7 @@ curl -X POST https://oc.example.com/v1/chat/completions \
   -H "X-API-Key: oc_YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-opus",
+    "model": "claude-opus-5",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
@@ -312,16 +312,22 @@ curl -X POST https://oc.example.com/v1/chat/completions \
 
 | Model | Alias | Context Window | Features |
 |-------|-------|----------------|----------|
+| **Claude Opus 5** | `claude-opus-5` | 1M tokens | Text, Image, Reasoning (adaptive), Tool calling, Prompt caching |
+| **Claude Opus 4.8** | `claude-opus-48` | 1M tokens | Text, Image, Reasoning (adaptive), Tool calling, Prompt caching |
+| **Claude Opus 4.7** | `claude-opus-47` | 1M tokens | Text, Image, Reasoning (adaptive), Tool calling, Prompt caching |
+| **Claude Opus 4.6** | `claude-opus-46` (`claude-opus`) | 1M tokens | Text, Image, Reasoning, Tool calling, Prompt caching |
+| **Claude Sonnet 4.6** | `claude-sonnet` | 1M tokens | Text, Image, Reasoning, Tool calling, Prompt caching |
 | **Kimi K2.5** | `kimi-k25` | 256K tokens | Text, Image, Tool calling |
-| **Claude Opus 4.6** | `claude-opus` | 200K tokens | Text, Image, Reasoning, Tool calling, Prompt caching |
-| **Claude Sonnet 4.5** | `claude-sonnet` | 200K tokens | Text, Image, Reasoning, Tool calling, Prompt caching |
+| **DeepSeek, MiniMax, GLM, Qwen** | `deepseek-v3`, `minimax-m2`, `glm-4`, `glm-4-flash`, `qwen3-coder` | varies | Routed via Bedrock Mantle |
+
+The distribution default is **Claude Opus 4.8** (`bedrock/claude-opus-48`). The full, authoritative model list lives in `services/distribution/assets/opencode.json` and the router's `DEFAULT_MODEL_MAP` (`services/router/main.py`) — run `/models` in the client to see what's currently available. See [docs/ROUTER.md](docs/ROUTER.md#model-mapping) for the complete map.
 
 ### Model Routing
 
 The router automatically detects the target model and routes to the appropriate backend:
 
 - **Anthropic models** (Claude Opus/Sonnet): Use Bedrock Converse API via boto3 with automatic [prompt caching](docs/ROUTER.md#prompt-caching)
-- **Other models** (Kimi): Use Bedrock Mantle proxy
+- **Other models** (Kimi, DeepSeek, MiniMax, GLM, Qwen): Use Bedrock Mantle proxy
 
 Both routes return OpenAI-compatible responses.
 
@@ -507,4 +513,4 @@ This library is licensed under the MIT-0 License. See the LICENSE file.
 
 ---
 
-**Last Updated**: 2026-02-17
+**Last Updated**: 2026-08-10

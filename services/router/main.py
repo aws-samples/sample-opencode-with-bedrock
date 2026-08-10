@@ -334,6 +334,8 @@ DEFAULT_MODEL_MAP = {
     "bedrock/claude-opus-47": "us.anthropic.claude-opus-4-7",
     "claude-opus-48": "us.anthropic.claude-opus-4-8",
     "bedrock/claude-opus-48": "us.anthropic.claude-opus-4-8",
+    "claude-opus-5": "us.anthropic.claude-opus-5",
+    "bedrock/claude-opus-5": "us.anthropic.claude-opus-5",
     "claude-sonnet": "us.anthropic.claude-sonnet-4-6",
     "bedrock/claude-sonnet": "us.anthropic.claude-sonnet-4-6",
     "claude-sonnet-1m": "us.anthropic.claude-sonnet-4-6",
@@ -380,6 +382,8 @@ ADAPTIVE_THINKING_MODELS = {
     "bedrock/claude-opus-47",
     "claude-opus-48",
     "bedrock/claude-opus-48",
+    "claude-opus-5",
+    "bedrock/claude-opus-5",
 }
 
 # Map OpenAI-style reasoning_effort / thinking budget to the discrete effort

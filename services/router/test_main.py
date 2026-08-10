@@ -668,3 +668,28 @@ class TestContext1MModels:
         additional = params.get("additionalModelRequestFields", {})
         assert "thinking" not in additional
         assert "output_config" not in additional
+
+    def test_opus_5_in_default_map(self):
+        """Opus 5 maps to the us.anthropic.claude-opus-5 inference profile."""
+        import main
+
+        model_map = main.DEFAULT_MODEL_MAP
+        assert model_map["claude-opus-5"] == "us.anthropic.claude-opus-5"
+        assert model_map["bedrock/claude-opus-5"] == "us.anthropic.claude-opus-5"
+
+    def test_opus_5_uses_adaptive_thinking(self):
+        """Opus 5 must use adaptive thinking + output_config.effort, not enabled."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-5",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "reasoning_effort": "low",
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="bedrock/claude-opus-5"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert additional["thinking"] == {"type": "adaptive"}
+        assert additional["output_config"]["effort"] == "low"
+        assert "budget_tokens" not in additional["thinking"]

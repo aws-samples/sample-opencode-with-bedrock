@@ -378,6 +378,7 @@ cd opencode-installer</code></pre>
                 This distribution includes the following Bedrock models:
             </p>
             <ul style="margin: 0 0 1rem 1.5rem; color: var(--text-muted);">
+                <li><strong>Claude Opus 5</strong> (<code>bedrock/claude-opus-5</code>)</li>
                 <li><strong>Claude Opus 4.8</strong> (<code>bedrock/claude-opus-48</code>)</li>
                 <li><strong>Claude Opus 4.7</strong> (<code>bedrock/claude-opus-47</code>)</li>
                 <li><strong>Claude Opus 4.6</strong> (<code>bedrock/claude-opus-46</code>)</li>
@@ -392,12 +393,12 @@ cd opencode-installer</code></pre>
 
             <h3 style="font-size: 1rem; margin: 1.5rem 0 0.75rem; color: var(--text);">Default Model</h3>
             <p style="margin-bottom: 1rem; color: var(--text-muted);">
-                The default model is <strong>Claude Opus 4.7</strong>. OpenCode selects the default based on:
+                The default model is <strong>Claude Opus 4.8</strong>. OpenCode selects the default based on:
             </p>
             <ol style="margin: 0 0 1rem 1.5rem; color: var(--text-muted);">
                 <li>Config file: <code>model</code> key in <code>opencode.json</code></li>
                 <li>Last used model from previous session</li>
-                <li>Distribution default (Claude Opus 4.7)</li>
+                <li>Distribution default (Claude Opus 4.8)</li>
             </ol>
 
             <h3 style="font-size: 1rem; margin: 1.5rem 0 0.75rem; color: var(--text);">Changing Models</h3>

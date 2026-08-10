@@ -34,6 +34,28 @@
             "output": 128000
           }
         },
+        "claude-opus-5": {
+          "name": "Claude Opus 5",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 5,
+            "output": 25,
+            "cache_read": 0.5,
+            "cache_write": 6.25
+          },
+          "limit": {
+            "context": 1000000,
+            "input": 1000000,
+            "output": 128000
+          }
+        },
         "claude-opus-47": {
           "name": "Claude Opus 4.7",
           "attachment": true,
@@ -223,5 +245,5 @@
       }
     }
   },
-  "model": "bedrock/claude-opus-47"
+  "model": "bedrock/claude-opus-48"
 }

@@ -128,23 +128,38 @@ flowchart TD
 
 ## Model Mapping
 
-The router maps friendly model names to Bedrock model IDs. The mapping is defined in `DEFAULT_MODEL_MAP` (`main.py:188-198`) and can be overridden at runtime via the `BEDROCK_MODEL_MAP` environment variable (a JSON string).
+The router maps friendly model names to Bedrock model IDs. The mapping is defined in `DEFAULT_MODEL_MAP` in `main.py` and can be overridden at runtime via the `BEDROCK_MODEL_MAP` environment variable (a JSON string).
 
 ### Current Default Model Map
 
+Each model is accepted under both a short name and a `bedrock/`-prefixed alias (e.g. `claude-opus-5` and `bedrock/claude-opus-5`); only the short name is listed below for brevity. `main.py` is the source of truth if this table drifts.
+
+**Anthropic (Converse API path):**
+
 | Requested Model | Bedrock Model ID |
 |----------------|------------------|
-| `claude-opus` | `us.anthropic.claude-opus-4-6-v1` |
-| `bedrock/claude-opus` | `us.anthropic.claude-opus-4-6-v1` |
-| `claude-sonnet` | `us.anthropic.claude-sonnet-4-6` |
-| `bedrock/claude-sonnet` | `us.anthropic.claude-sonnet-4-6` |
+| `claude-opus`, `claude-opus-46`, `claude-opus-1m` | `us.anthropic.claude-opus-4-6-v1` |
+| `claude-opus-47` | `us.anthropic.claude-opus-4-7` |
+| `claude-opus-48` | `us.anthropic.claude-opus-4-8` |
+| `claude-opus-5` | `us.anthropic.claude-opus-5` |
+| `claude-sonnet`, `claude-sonnet-1m` | `us.anthropic.claude-sonnet-4-6` |
 | `claude-sonnet-45` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
-| `bedrock/claude-sonnet-45` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
-| `kimi-k25` | `moonshotai.kimi-k2.5` |
-| `bedrock/kimi-k25` | `moonshotai.kimi-k2.5` |
-| `bedrock/kimi-k2-thinking` | `moonshotai.kimi-k2-thinking` |
 
-Both the short name (`claude-sonnet`) and the prefixed name (`bedrock/claude-sonnet`) are accepted for client compatibility.
+**Other providers (Mantle path):**
+
+| Requested Model | Bedrock Model ID |
+|----------------|------------------|
+| `kimi-k25` | `moonshotai.kimi-k2.5` |
+| `bedrock/kimi-k2-thinking` | `moonshotai.kimi-k2-thinking` |
+| `deepseek-v3` | `deepseek.v3.2` |
+| `minimax-m2` | `minimax.minimax-m2.1` |
+| `glm-4` | `zai.glm-4.7` |
+| `glm-4-flash` | `zai.glm-4.7-flash` |
+| `qwen3-coder` | `qwen.qwen3-coder-next` |
+
+Both the short name (`claude-sonnet`) and the prefixed name (`bedrock/claude-sonnet`) are accepted for client compatibility. `bedrock/kimi-k2-thinking` is only registered under its prefixed name.
+
+Anthropic Opus 4.7 and later (including Opus 5) additionally require adaptive thinking — see [Extended Thinking / Reasoning](#extended-thinking--reasoning) and `ADAPTIVE_THINKING_MODELS` in `main.py`.
 
 ### How to Add a New Model
 
@@ -266,7 +281,9 @@ HTTP URLs are not fetched — they are passed as text placeholders (`[Image URL:
 
 #### Extended Thinking / Reasoning
 
-When `reasoning_effort` or `thinking` is present in the request, the router enables Bedrock's extended thinking via `additionalModelRequestFields`:
+When `reasoning_effort` or `thinking` is present in the request, the router enables Bedrock's extended thinking via `additionalModelRequestFields`. The shape depends on the model.
+
+**Legacy shape** (Opus 4.6 and Sonnet) — `thinking.type = "enabled"` with a token budget:
 
 ```
 OpenAI:                              Converse API:
@@ -276,6 +293,18 @@ OpenAI:                              Converse API:
   }                                        "type": "enabled",
 }                                          "budget_tokens": 10000
                                          }
+                                       }
+                                     }
+```
+
+**Adaptive shape** (Opus 4.7 and later, including Opus 5) — models in `ADAPTIVE_THINKING_MODELS` require `thinking.type = "adaptive"` plus a discrete `output_config.effort` level; the legacy `enabled` shape is rejected by these models. A legacy `budget_tokens` request is mapped to an effort level automatically:
+
+```
+OpenAI:                              Converse API:
+{                                    {
+  "reasoning_effort": "low"            "additionalModelRequestFields": {
+}                                        "thinking": { "type": "adaptive" },
+                                         "output_config": { "effort": "low" }
                                        }
                                      }
 ```

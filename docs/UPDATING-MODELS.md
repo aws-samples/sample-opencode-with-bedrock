@@ -44,6 +44,18 @@ DEFAULT_MODEL_MAP = {
 
 If the model is not from Anthropic (i.e., doesn't start with `anthropic.` or `us.anthropic.`), it will be routed through Mantle automatically.
 
+**Anthropic thinking shape:** Anthropic Claude Opus 4.7 and later (including Opus 5) require the *adaptive* thinking shape (`thinking.type = "adaptive"` + `output_config.effort`) and reject the legacy `thinking.type = "enabled"` shape. When adding such a model, also add both its keys to `ADAPTIVE_THINKING_MODELS` in `main.py`:
+
+```python
+ADAPTIVE_THINKING_MODELS = {
+    ...
+    "my-opus-model": ...,          # both the short name
+    "bedrock/my-opus-model": ...,  # and the bedrock/ alias
+}
+```
+
+Older Anthropic models (Opus 4.6, Sonnet) keep the legacy `enabled` shape and must NOT be added to this set. If unsure, test the model directly against Bedrock Converse with each shape before choosing.
+
 ### Step 3: Update IAM Permissions (if new provider)
 
 If this is a new model provider (not Anthropic or Moonshot), update the ECS task role in `src/stacks/api-stack.ts` to grant `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on the new model ARN pattern.

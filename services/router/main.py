@@ -564,6 +564,20 @@ def translate_openai_to_converse(body, enable_cache=False, original_model=None):
 
         converse_messages.append({"role": role, "content": converse_content})
 
+    # Guard against assistant-message "prefill": Converse (and newer Claude
+    # models such as Opus 4.7+) reject a conversation that ends on an assistant
+    # turn with:
+    #   "This model does not support assistant message prefill. The
+    #    conversation must end with a user message."
+    # This happens when a streaming response is interrupted and the client
+    # (opencode) re-sends the history ending with the partial assistant message
+    # to continue it. Append a minimal user turn so the request is valid and the
+    # model continues its response instead of the stream erroring out.
+    if converse_messages and converse_messages[-1]["role"] == "assistant":
+        converse_messages.append(
+            {"role": "user", "content": [{"text": "Please continue."}]}
+        )
+
     # Inject a cachePoint on the second-to-last user turn so the entire
     # conversation prefix is cached between requests.  Anthropic allows up
     # to 4 breakpoints; we use: system, tools, and this turn-level one.

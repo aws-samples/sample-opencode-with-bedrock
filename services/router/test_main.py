@@ -693,3 +693,143 @@ class TestContext1MModels:
         assert additional["thinking"] == {"type": "adaptive"}
         assert additional["output_config"]["effort"] == "low"
         assert "budget_tokens" not in additional["thinking"]
+
+
+class TestTrailingAssistantPrefillGuard:
+    """Converse (and newer Claude models via Bedrock) reject a request whose
+    message history ends on an assistant turn:
+
+        ValidationException: This model does not support assistant message
+        prefill. The conversation must end with a user message.
+
+    This happens when a streaming response is interrupted and opencode re-sends
+    the conversation ending with the partial assistant message (a "prefill" /
+    continue request). translate_openai_to_converse must ensure the resulting
+    Converse messages always end with a user turn.
+    """
+
+    def test_trailing_assistant_message_gets_user_turn_appended(self):
+        """A history ending with an assistant message must be made to end with
+        a user message so Bedrock does not reject it as prefill."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-8",
+            "messages": [
+                {"role": "user", "content": "Write a haiku."},
+                {"role": "assistant", "content": "Silent pond, a frog"},
+            ],
+        }
+        params = main.translate_openai_to_converse(body)
+        messages = params["messages"]
+        assert messages[-1]["role"] == "user", (
+            "Converse request must end with a user turn, not an assistant "
+            "prefill (got role=%r)" % messages[-1]["role"]
+        )
+        # The original assistant content must be preserved before the appended turn.
+        assert messages[-2]["role"] == "assistant"
+        assert messages[-2]["content"] == [{"text": "Silent pond, a frog"}]
+
+    def test_trailing_assistant_with_tool_calls_gets_user_turn(self):
+        """An interrupted assistant turn that only contains tool_calls (no text)
+        must also be followed by a user turn."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-8",
+            "messages": [
+                {"role": "user", "content": "What's the weather?"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"city": "Seattle"}',
+                            },
+                        }
+                    ],
+                },
+            ],
+        }
+        params = main.translate_openai_to_converse(body)
+        messages = params["messages"]
+        assert messages[-1]["role"] == "user"
+        # The assistant toolUse turn must be preserved.
+        assert messages[-2]["role"] == "assistant"
+        assert any("toolUse" in b for b in messages[-2]["content"])
+
+    def test_appended_user_turn_has_nonempty_content(self):
+        """The synthetic user turn must carry a non-empty text block, since
+        Converse requires at least one content block per message."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-8",
+            "messages": [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello there"},
+            ],
+        }
+        params = main.translate_openai_to_converse(body)
+        last = params["messages"][-1]
+        assert last["role"] == "user"
+        assert last["content"], "appended user turn must have content"
+        assert any(
+            b.get("text") for b in last["content"]
+        ), "appended user turn must contain non-empty text"
+
+    def test_history_ending_with_user_is_unchanged(self):
+        """When the history already ends with a user turn (the normal case),
+        no extra user message should be appended."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-8",
+            "messages": [
+                {"role": "user", "content": "First"},
+                {"role": "assistant", "content": "Reply"},
+                {"role": "user", "content": "Second"},
+            ],
+        }
+        params = main.translate_openai_to_converse(body)
+        messages = params["messages"]
+        assert messages[-1]["role"] == "user"
+        assert messages[-1]["content"] == [{"text": "Second"}]
+        # Exactly the three turns we sent — nothing appended.
+        assert len(messages) == 3
+
+    def test_history_ending_with_tool_result_is_unchanged(self):
+        """A history ending with tool results maps to a trailing user turn
+        (toolResult blocks live in a user message) and must not be altered."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-4-8",
+            "messages": [
+                {"role": "user", "content": "Check weather"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "72F"},
+            ],
+        }
+        params = main.translate_openai_to_converse(body)
+        messages = params["messages"]
+        assert messages[-1]["role"] == "user"
+        # The last user turn should be the toolResult, not an appended nudge.
+        assert any("toolResult" in b for b in messages[-1]["content"])

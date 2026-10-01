@@ -351,6 +351,11 @@ export class ApiStack extends cdk.Stack {
         'arn:aws:bedrock:*::foundation-model/zai.*',
         'arn:aws:bedrock:*::foundation-model/qwen.*',
         'arn:aws:bedrock:*::foundation-model/moonshot.*',
+        // GPT-6 Astra is invoked via the us.openai.* inference profile, but
+        // Bedrock also checks InvokeModel(WithResponseStream) on the underlying
+        // foundation-model ARN, so both grants are required.
+        'arn:aws:bedrock:*::foundation-model/openai.*',
+        `arn:aws:bedrock:*:${this.account}:inference-profile/us.openai.*`,
       ],
     }));
 
@@ -672,10 +677,11 @@ export class ApiStack extends cdk.Stack {
     NagSuppressions.addResourceSuppressions(taskRole, [
       {
         id: 'AwsSolutions-IAM5',
-        reason: 'Wildcard ARNs required for cross-region Bedrock inference profiles (us.anthropic.*, us.moonshotai.*) and foundation models (deepseek.*, minimax.*, zai.*, qwen.*, moonshot.*)',
+        reason: 'Wildcard ARNs required for cross-region Bedrock inference profiles (us.anthropic.*, us.moonshotai.*, us.openai.*) and foundation models (deepseek.*, minimax.*, zai.*, qwen.*, moonshot.*, openai.*)',
         appliesTo: [
           `Resource::arn:aws:bedrock:*:${this.account}:inference-profile/us.anthropic.*`,
           `Resource::arn:aws:bedrock:*:${this.account}:inference-profile/us.moonshotai.*`,
+          `Resource::arn:aws:bedrock:*:${this.account}:inference-profile/us.openai.*`,
           'Resource::arn:aws:bedrock:*::foundation-model/anthropic.*',
           'Resource::arn:aws:bedrock:*::foundation-model/moonshotai.*',
           'Resource::arn:aws:bedrock:*::foundation-model/deepseek.*',
@@ -683,6 +689,7 @@ export class ApiStack extends cdk.Stack {
           'Resource::arn:aws:bedrock:*::foundation-model/zai.*',
           'Resource::arn:aws:bedrock:*::foundation-model/qwen.*',
           'Resource::arn:aws:bedrock:*::foundation-model/moonshot.*',
+          'Resource::arn:aws:bedrock:*::foundation-model/openai.*',
           `Resource::arn:aws:bedrock-mantle:*:${this.account}:project/default`,
           'Resource::*',
         ],

@@ -100,6 +100,28 @@
             "output": 128000
           }
         },
+        "claude-opus-55": {
+          "name": "Claude Opus 5.5",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": true,
+          "tool_call": true,
+          "cost": {
+            "input": 4,
+            "output": 20,
+            "cache_read": 0.2,
+            "cache_write": 5
+          },
+          "limit": {
+            "context": 1000000,
+            "input": 1000000,
+            "output": 128000
+          }
+        },
         "claude-sonnet": {
           "name": "Claude Sonnet 4.6",
           "attachment": true,
@@ -120,6 +142,26 @@
             "context": 1000000,
             "input": 1000000,
             "output": 64000
+          }
+        },
+        "gpt-6-astra": {
+          "name": "GPT-6 Astra",
+          "attachment": true,
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "temperature": false,
+          "tool_call": true,
+          "cost": {
+            "input": 11,
+            "output": 55
+          },
+          "limit": {
+            "context": 1050000,
+            "input": 1050000,
+            "output": 128000
           }
         },
         "kimi-k25": {

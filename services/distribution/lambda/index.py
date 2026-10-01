@@ -378,11 +378,13 @@ cd opencode-installer</code></pre>
                 This distribution includes the following Bedrock models:
             </p>
             <ul style="margin: 0 0 1rem 1.5rem; color: var(--text-muted);">
+                <li><strong>Claude Opus 5.5</strong> (<code>bedrock/claude-opus-55</code>)</li>
                 <li><strong>Claude Opus 5</strong> (<code>bedrock/claude-opus-5</code>)</li>
                 <li><strong>Claude Opus 4.8</strong> (<code>bedrock/claude-opus-48</code>)</li>
                 <li><strong>Claude Opus 4.7</strong> (<code>bedrock/claude-opus-47</code>)</li>
                 <li><strong>Claude Opus 4.6</strong> (<code>bedrock/claude-opus-46</code>)</li>
                 <li><strong>Claude Sonnet 4.6</strong> (<code>bedrock/claude-sonnet</code>)</li>
+                <li><strong>GPT-6 Astra</strong> (<code>bedrock/gpt-6-astra</code>)</li>
                 <li><strong>Kimi K2.5</strong> (<code>bedrock/kimi-k25</code>)</li>
                 <li><strong>DeepSeek V3.2</strong> (<code>bedrock/deepseek-v3</code>)</li>
                 <li><strong>MiniMax M2.1</strong> (<code>bedrock/minimax-m2</code>)</li>

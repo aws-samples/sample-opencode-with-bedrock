@@ -35,7 +35,7 @@ flowchart TD
     Internet((Internet))
     ALB["ALB (HTTPS:443)"]
     Router["ECS Fargate Service\nbedrock-router :8080"]
-    Converse["Bedrock Converse API\n(Anthropic models)"]
+    Converse["Bedrock Converse API\n(Anthropic + OpenAI models)"]
     Mantle["Bedrock Mantle\n(all other models)"]
     Forbidden["403 Forbidden"]
 
@@ -48,7 +48,7 @@ flowchart TD
     ALB -- "P10: X-API-Key: oc_* (passthrough)" --> Router
     ALB -- "Default" --> Forbidden
 
-    Router -- "Anthropic models" --> Converse
+    Router -- "Anthropic + OpenAI models" --> Converse
     Router -- "All other models" --> Mantle
 ```
 
@@ -80,15 +80,15 @@ The router runs on ECS Fargate with:
 The central routing decision happens in `chat_completions()` at `main.py:1424`:
 
 ```python
-if is_anthropic_model(mapped_model):
-    # Route to Bedrock Converse API (full translation)
+if is_converse_model(mapped_model):
+    # Route to Bedrock Converse API (full translation) — Anthropic + OpenAI
 else:
     # Proxy to Bedrock Mantle (passthrough)
 ```
 
-### Converse API Path (Anthropic Models)
+### Converse API Path (Anthropic + OpenAI Models)
 
-For models whose resolved Bedrock ID starts with `anthropic.` or `us.anthropic.` (`main.py:235-237`):
+For models whose resolved Bedrock ID starts with `anthropic.`, `us.anthropic.`, `openai.`, or `us.openai.` (`is_converse_model()`):
 
 1. The OpenAI request body is fully translated to Converse API format via `translate_openai_to_converse()`
 2. The router calls either `client.converse()` (non-streaming) or `client.converse_stream()` (streaming) using the Bedrock Runtime SDK
@@ -111,7 +111,7 @@ Mantle natively speaks the OpenAI protocol, so no translation is needed.
 ```mermaid
 flowchart TD
     A["Client Request"] --> B["Model Map Lookup\nclaude-sonnet → us.anthropic.claude-sonnet-4-6"]
-    B --> C{"is_anthropic_model?"}
+    B --> C{"is_converse_model?"}
     C -- "Yes" --> D["Converse API Path"]
     C -- "No" --> E["Mantle Proxy Path"]
     D --> D1["translate_openai_to_converse()"]
@@ -134,7 +134,7 @@ The router maps friendly model names to Bedrock model IDs. The mapping is define
 
 Each model is accepted under both a short name and a `bedrock/`-prefixed alias (e.g. `claude-opus-5` and `bedrock/claude-opus-5`); only the short name is listed below for brevity. `main.py` is the source of truth if this table drifts.
 
-**Anthropic (Converse API path):**
+**Converse API path (Anthropic + OpenAI):**
 
 | Requested Model | Bedrock Model ID |
 |----------------|------------------|
@@ -142,8 +142,10 @@ Each model is accepted under both a short name and a `bedrock/`-prefixed alias (
 | `claude-opus-47` | `us.anthropic.claude-opus-4-7` |
 | `claude-opus-48` | `us.anthropic.claude-opus-4-8` |
 | `claude-opus-5` | `us.anthropic.claude-opus-5` |
+| `claude-opus-55` | `us.anthropic.claude-opus-5-5` |
 | `claude-sonnet`, `claude-sonnet-1m` | `us.anthropic.claude-sonnet-4-6` |
 | `claude-sonnet-45` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+| `gpt-6-astra` | `us.openai.gpt-6-astra` |
 
 **Other providers (Mantle path):**
 
@@ -159,7 +161,9 @@ Each model is accepted under both a short name and a `bedrock/`-prefixed alias (
 
 Both the short name (`claude-sonnet`) and the prefixed name (`bedrock/claude-sonnet`) are accepted for client compatibility. `bedrock/kimi-k2-thinking` is only registered under its prefixed name.
 
-Anthropic Opus 4.7 and later (including Opus 5) additionally require adaptive thinking — see [Extended Thinking / Reasoning](#extended-thinking--reasoning) and `ADAPTIVE_THINKING_MODELS` in `main.py`.
+Anthropic Opus 4.7 and later (including Opus 5 and Opus 5.5) additionally require adaptive thinking — see [Extended Thinking / Reasoning](#extended-thinking--reasoning) and `ADAPTIVE_THINKING_MODELS` in `main.py`.
+
+GPT-6 Astra (`gpt-6-astra` → `us.openai.gpt-6-astra`) is an OpenAI model that uses the **Converse API** path, not Mantle: Bedrock Mantle's Chat Completions route rejects function tools for this model (it requires `/v1/responses`), whereas Converse supports tool use. The router routes it via `is_converse_model()`, injects the OpenAI reasoning shape (`reasoning.effort`) instead of Anthropic `thinking`, and skips the fields Astra rejects on Converse — `temperature`, `topP`, and `cachePoint` prompt-cache hints.
 
 ### How to Add a New Model
 

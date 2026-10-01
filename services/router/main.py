@@ -336,6 +336,8 @@ DEFAULT_MODEL_MAP = {
     "bedrock/claude-opus-48": "us.anthropic.claude-opus-4-8",
     "claude-opus-5": "us.anthropic.claude-opus-5",
     "bedrock/claude-opus-5": "us.anthropic.claude-opus-5",
+    "claude-opus-55": "us.anthropic.claude-opus-5-5",
+    "bedrock/claude-opus-55": "us.anthropic.claude-opus-5-5",
     "claude-sonnet": "us.anthropic.claude-sonnet-4-6",
     "bedrock/claude-sonnet": "us.anthropic.claude-sonnet-4-6",
     "claude-sonnet-1m": "us.anthropic.claude-sonnet-4-6",
@@ -360,6 +362,10 @@ DEFAULT_MODEL_MAP = {
     # Qwen / Alibaba (Mantle path)
     "qwen3-coder": "qwen.qwen3-coder-next",
     "bedrock/qwen3-coder": "qwen.qwen3-coder-next",
+    # OpenAI (Converse API path on bedrock-runtime — Mantle Chat Completions
+    # rejects function tools for this model, so we use Converse like Anthropic)
+    "gpt-6-astra": "us.openai.gpt-6-astra",
+    "bedrock/gpt-6-astra": "us.openai.gpt-6-astra",
 }
 
 # Models that require the 1M context window beta flag.
@@ -384,6 +390,8 @@ ADAPTIVE_THINKING_MODELS = {
     "bedrock/claude-opus-48",
     "claude-opus-5",
     "bedrock/claude-opus-5",
+    "claude-opus-55",
+    "bedrock/claude-opus-55",
 }
 
 # Map OpenAI-style reasoning_effort / thinking budget to the discrete effort
@@ -439,6 +447,24 @@ _executor = ThreadPoolExecutor(max_workers=4)
 def is_anthropic_model(model_id):
     """Check if a resolved model ID targets an Anthropic model."""
     return model_id.startswith("anthropic.") or model_id.startswith("us.anthropic.")
+
+
+def is_openai_model(model_id):
+    """Check if a resolved model ID targets an OpenAI model (e.g. GPT-6 Astra)."""
+    return model_id.startswith("openai.") or model_id.startswith("us.openai.")
+
+
+def is_converse_model(model_id):
+    """Check if a resolved model ID should be served via the Bedrock Converse API.
+
+    Anthropic models use Converse for full protocol translation and prompt
+    caching. OpenAI models (e.g. ``us.openai.gpt-6-astra``) also use Converse on
+    ``bedrock-runtime``: Bedrock Mantle's Chat Completions route rejects function
+    tools for GPT-6 Astra (it requires ``/v1/responses``), whereas Converse
+    supports tool use natively. See the GPT-6 Astra model card:
+    https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-astra.html
+    """
+    return is_anthropic_model(model_id) or is_openai_model(model_id)
 
 
 def get_bedrock_client():
@@ -604,18 +630,26 @@ def translate_openai_to_converse(body, enable_cache=False, original_model=None):
         params["system"] = system_blocks
 
     # Inference config
+    #
+    # OpenAI reasoning models on Converse (e.g. GPT-6 Astra) only accept
+    # maxTokens here — they reject temperature, topP, and blank stop sequences.
+    # Anthropic models accept the full set.
+    openai_model = is_openai_model(body.get("model", ""))
     inference_config = {}
     if "max_tokens" in body:
         inference_config["maxTokens"] = body["max_tokens"]
-    if "temperature" in body:
+    if "temperature" in body and not openai_model:
         inference_config["temperature"] = body["temperature"]
-    if "top_p" in body:
+    if "top_p" in body and not openai_model:
         inference_config["topP"] = body["top_p"]
     if "stop" in body:
         stop = body["stop"]
         if isinstance(stop, str):
             stop = [stop]
-        inference_config["stopSequences"] = stop
+        # Converse rejects blank stop sequences; drop empty entries.
+        stop = [s for s in stop if isinstance(s, str) and s != ""]
+        if stop:
+            inference_config["stopSequences"] = stop
     if inference_config:
         params["inferenceConfig"] = inference_config
 
@@ -667,7 +701,15 @@ def translate_openai_to_converse(body, enable_cache=False, original_model=None):
     additional_fields = {}
     # Check for reasoning/thinking configuration
     if body.get("reasoning_effort") or body.get("thinking"):
-        if original_model in ADAPTIVE_THINKING_MODELS:
+        if is_openai_model(body.get("model", "")):
+            # OpenAI reasoning models (e.g. GPT-6 Astra) reject the Anthropic
+            # "thinking"/"output_config" shapes on Converse and instead expect
+            # reasoning.effort (the OpenAI Responses-style shape). Reasoning is
+            # always on for these models; we only tune the effort level.
+            additional_fields["reasoning"] = {
+                "effort": _effort_from_request(body)
+            }
+        elif original_model in ADAPTIVE_THINKING_MODELS:
             # Newer Claude Opus (4.7+) reject the legacy "enabled" shape and
             # require adaptive thinking with output_config.effort.
             additional_fields["thinking"] = {"type": "adaptive"}
@@ -853,8 +895,12 @@ async def handle_anthropic_non_streaming(body, request_id, original_model=None):
     """Call Converse API (non-streaming) in an executor thread."""
     loop = asyncio.get_event_loop()
     model = body["model"]
+    # Prompt-cache hints (cachePoint blocks) are an Anthropic feature. OpenAI
+    # models on Converse (e.g. GPT-6 Astra) reject cachePoint blocks, so only
+    # inject them for Anthropic models.
+    enable_cache = is_anthropic_model(model)
     params = translate_openai_to_converse(
-        body, enable_cache=True, original_model=original_model
+        body, enable_cache=enable_cache, original_model=original_model
     )
 
     log.info(
@@ -940,8 +986,10 @@ async def handle_anthropic_non_streaming(body, request_id, original_model=None):
 async def handle_anthropic_streaming(body, request_id, request, original_model=None):
     """Call ConverseStream API, translate events to OpenAI SSE format."""
     model = body["model"]
+    # cachePoint blocks are Anthropic-only; OpenAI models reject them.
+    enable_cache = is_anthropic_model(model)
     params = translate_openai_to_converse(
-        body, enable_cache=True, original_model=original_model
+        body, enable_cache=enable_cache, original_model=original_model
     )
 
     log.info(
@@ -1916,12 +1964,12 @@ async def chat_completions(request):
             "request_id": request_id,
             "requested_model": requested,
             "mapped_model": mapped_model,
-            "route": "converse" if is_anthropic_model(mapped_model) else "mantle",
+            "route": "converse" if is_converse_model(mapped_model) else "mantle",
         },
     )
 
-    # ---- Anthropic models → Bedrock Converse API ----
-    if is_anthropic_model(mapped_model):
+    # ---- Anthropic + OpenAI models → Bedrock Converse API ----
+    if is_converse_model(mapped_model):
         is_stream = body.get("stream", False)
         log.info(
             "Routing to Converse API",

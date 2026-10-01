@@ -694,6 +694,168 @@ class TestContext1MModels:
         assert additional["output_config"]["effort"] == "low"
         assert "budget_tokens" not in additional["thinking"]
 
+    def test_opus_55_in_default_map(self):
+        """Opus 5.5 maps to the us.anthropic.claude-opus-5-5 inference profile."""
+        import main
+
+        model_map = main.DEFAULT_MODEL_MAP
+        assert model_map["claude-opus-55"] == "us.anthropic.claude-opus-5-5"
+        assert model_map["bedrock/claude-opus-55"] == "us.anthropic.claude-opus-5-5"
+
+    def test_opus_55_uses_adaptive_thinking(self):
+        """Opus 5.5 must use adaptive thinking + output_config.effort, not enabled."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-5-5",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "reasoning_effort": "low",
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="bedrock/claude-opus-55"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert additional["thinking"] == {"type": "adaptive"}
+        assert additional["output_config"]["effort"] == "low"
+        assert "budget_tokens" not in additional["thinking"]
+
+
+class TestGpt6Astra:
+    """GPT-6 Astra is an OpenAI reasoning model served via the Bedrock Converse
+    API on bedrock-runtime (NOT Mantle Chat Completions, which rejects function
+    tools for this model). It requires the OpenAI reasoning shape and rejects
+    Anthropic-only fields (thinking, output_config, cachePoint) and the
+    temperature/topP inference fields."""
+
+    def test_gpt_6_astra_in_default_map(self):
+        import main
+
+        model_map = main.DEFAULT_MODEL_MAP
+        assert model_map["gpt-6-astra"] == "us.openai.gpt-6-astra"
+        assert model_map["bedrock/gpt-6-astra"] == "us.openai.gpt-6-astra"
+
+    def test_gpt_6_astra_is_openai_and_converse_not_anthropic(self):
+        import main
+
+        assert main.is_openai_model("us.openai.gpt-6-astra") is True
+        assert main.is_anthropic_model("us.openai.gpt-6-astra") is False
+        assert main.is_converse_model("us.openai.gpt-6-astra") is True
+
+    def test_anthropic_still_converse(self):
+        import main
+
+        assert main.is_converse_model("us.anthropic.claude-opus-5-5") is True
+
+    def test_mantle_models_not_converse(self):
+        import main
+
+        for model_id in ("moonshotai.kimi-k2.5", "deepseek.v3.2", "zai.glm-4.7"):
+            assert main.is_converse_model(model_id) is False
+
+    def test_astra_uses_reasoning_effort_not_thinking(self):
+        """OpenAI models must get reasoning.effort, never Anthropic thinking/output_config."""
+        import main
+
+        body = {
+            "model": "us.openai.gpt-6-astra",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "reasoning_effort": "medium",
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=False, original_model="gpt-6-astra"
+        )
+        additional = params.get("additionalModelRequestFields", {})
+        assert additional["reasoning"] == {"effort": "medium"}
+        assert "thinking" not in additional
+        assert "output_config" not in additional
+
+    def test_astra_strips_temperature_and_top_p(self):
+        """Converse rejects temperature/topP for GPT-6 Astra; translation must drop them."""
+        import main
+
+        body = {
+            "model": "us.openai.gpt-6-astra",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "max_tokens": 2048,
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=False, original_model="gpt-6-astra"
+        )
+        ic = params.get("inferenceConfig", {})
+        assert ic.get("maxTokens") == 2048
+        assert "temperature" not in ic
+        assert "topP" not in ic
+
+    def test_anthropic_keeps_temperature_and_top_p(self):
+        """Anthropic models must still receive temperature/topP."""
+        import main
+
+        body = {
+            "model": "us.anthropic.claude-opus-5-5",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "temperature": 0.7,
+            "top_p": 0.9,
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=True, original_model="claude-opus-55"
+        )
+        ic = params.get("inferenceConfig", {})
+        assert ic.get("temperature") == 0.7
+        assert ic.get("topP") == 0.9
+
+    def test_blank_stop_sequences_dropped(self):
+        """Converse rejects blank stop sequences; empty entries must be filtered out."""
+        import main
+
+        body = {
+            "model": "us.openai.gpt-6-astra",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stop": [""],
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=False, original_model="gpt-6-astra"
+        )
+        ic = params.get("inferenceConfig", {})
+        assert "stopSequences" not in ic
+
+    def test_astra_no_cachepoint_when_cache_disabled(self):
+        """With enable_cache=False (how the handler calls it for OpenAI models),
+        no cachePoint blocks are injected into system or toolConfig."""
+        import main
+
+        body = {
+            "model": "us.openai.gpt-6-astra",
+            "messages": [
+                {"role": "system", "content": "You are a coding agent."},
+                {"role": "user", "content": "Weather in Paris?"},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
+        }
+        params = main.translate_openai_to_converse(
+            body, enable_cache=False, original_model="gpt-6-astra"
+        )
+        assert not any(
+            "cachePoint" in b for b in params.get("system", [])
+        )
+        assert not any(
+            "cachePoint" in t
+            for t in params.get("toolConfig", {}).get("tools", [])
+        )
+
 
 class TestTrailingAssistantPrefillGuard:
     """Converse (and newer Claude models via Bedrock) reject a request whose

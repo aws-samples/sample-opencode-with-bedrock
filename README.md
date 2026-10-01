@@ -66,7 +66,7 @@ flowchart TB
 ## Key Features
 
 - **ECS Fargate**: Containerized router service (no EC2 management)
-- **Multi-Model Support**: Claude (Opus & Sonnet), Kimi K2.5, DeepSeek, MiniMax, GLM, and Qwen via Bedrock
+- **Multi-Model Support**: Claude (Opus & Sonnet), GPT-6 Astra, Kimi K2.5, DeepSeek, MiniMax, GLM, and Qwen via Bedrock
 - **Dual Routing**: Bedrock Converse API for Anthropic models, Bedrock Mantle for others
 - **Dual ALB Setup**: JWT validation for API, OIDC for browser traffic
 - **API Key Authentication**: Long-lived keys for CI/CD and automation (no browser required)
@@ -312,11 +312,13 @@ curl -X POST https://oc.example.com/v1/chat/completions \
 
 | Model | Alias | Context Window | Features |
 |-------|-------|----------------|----------|
+| **Claude Opus 5.5** | `claude-opus-55` | 1M tokens | Text, Image, Reasoning (adaptive), Tool calling, Prompt caching |
 | **Claude Opus 5** | `claude-opus-5` | 1M tokens | Text, Image, Reasoning (adaptive), Tool calling, Prompt caching |
 | **Claude Opus 4.8** | `claude-opus-48` | 1M tokens | Text, Image, Reasoning (adaptive), Tool calling, Prompt caching |
 | **Claude Opus 4.7** | `claude-opus-47` | 1M tokens | Text, Image, Reasoning (adaptive), Tool calling, Prompt caching |
 | **Claude Opus 4.6** | `claude-opus-46` (`claude-opus`) | 1M tokens | Text, Image, Reasoning, Tool calling, Prompt caching |
 | **Claude Sonnet 4.6** | `claude-sonnet` | 1M tokens | Text, Image, Reasoning, Tool calling, Prompt caching |
+| **GPT-6 Astra** | `gpt-6-astra` | 1.05M tokens | Text, Image, Reasoning, Tool calling (routed via Bedrock Converse) |
 | **Kimi K2.5** | `kimi-k25` | 256K tokens | Text, Image, Tool calling |
 | **DeepSeek, MiniMax, GLM, Qwen** | `deepseek-v3`, `minimax-m2`, `glm-4`, `glm-4-flash`, `qwen3-coder` | varies | Routed via Bedrock Mantle |
 
@@ -327,6 +329,7 @@ The distribution default is **Claude Opus 4.8** (`bedrock/claude-opus-48`). The 
 The router automatically detects the target model and routes to the appropriate backend:
 
 - **Anthropic models** (Claude Opus/Sonnet): Use Bedrock Converse API via boto3 with automatic [prompt caching](docs/ROUTER.md#prompt-caching)
+- **GPT-6 Astra** (OpenAI): Uses Bedrock Converse API via boto3 (Mantle Chat Completions rejects function tools for this model)
 - **Other models** (Kimi, DeepSeek, MiniMax, GLM, Qwen): Use Bedrock Mantle proxy
 
 Both routes return OpenAI-compatible responses.

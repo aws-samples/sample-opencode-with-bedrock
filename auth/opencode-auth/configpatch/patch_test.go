@@ -195,6 +195,51 @@ func TestSetDeepCreatesIntermediates(t *testing.T) {
 	}
 }
 
+// TestSetDeepAddsProviderPackage mirrors the config patch that adds the
+// provider npm package for OpenCode v2 compatibility: an install without
+// provider.bedrock.npm must gain it while keeping user-added fields.
+func TestSetDeepAddsProviderPackage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "opencode.json")
+	writeJSON(t, path, map[string]interface{}{
+		"theme": "user-theme",
+		"provider": map[string]interface{}{
+			"bedrock": map[string]interface{}{
+				"name":    "Bedrock Models",
+				"options": map[string]interface{}{"baseURL": "http://localhost:18080/v1"},
+				"models": map[string]interface{}{
+					"user-model": map[string]interface{}{"name": "User Model"},
+				},
+			},
+		},
+	})
+
+	err := Apply(path, PatchSpec{
+		SetDeep: map[string]interface{}{
+			"provider.bedrock.npm":     "@ai-sdk/openai-compatible",
+			"provider.bedrock.options": map[string]interface{}{"baseURL": "http://localhost:18080/v1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := readJSON(t, path)
+	bedrock := result["provider"].(map[string]interface{})["bedrock"].(map[string]interface{})
+	if bedrock["npm"] != "@ai-sdk/openai-compatible" {
+		t.Errorf("provider npm not set, got %v", bedrock["npm"])
+	}
+	if _, ok := bedrock["models"].(map[string]interface{})["user-model"]; !ok {
+		t.Error("user-added model was removed")
+	}
+	if bedrock["name"] != "Bedrock Models" {
+		t.Error("provider name was modified")
+	}
+	if result["theme"] != "user-theme" {
+		t.Error("unrelated user setting was modified")
+	}
+}
+
 // Helper functions
 
 func writeJSON(t *testing.T, path string, data interface{}) {

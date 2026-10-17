@@ -369,66 +369,17 @@ if [[ -z "$CONFIG_VERSION" ]]; then
     echo "  Auto-incremented config_version: $PREV_CONFIG_VERSION -> $CONFIG_VERSION"
 fi
 
-# Build config-patch.json from opencode.json
-# This converts each model entry into a set_deep operation, and also patches
-# config.json with version_check_url for existing installs that lack it.
-# If the share feature is deployed, it also patches opencode.json with
-# enterprise.url and share settings.
-CONFIG_PATCH_JSON=$(python3 -c "
-import json, sys
-
-# Read the distribution opencode.json
-with open('$ASSETS_DIR/opencode.json') as f:
-    oc = json.load(f)
-
-# Build set_deep entries from opencode.json model definitions
-set_deep = {}
-provider = oc.get('provider', {})
-for provider_name, provider_config in provider.items():
-    models = provider_config.get('models', {})
-    for model_name, model_def in models.items():
-        set_deep[f'provider.{provider_name}.models.{model_name}'] = model_def
-    # Also set provider options (e.g. baseURL)
-    options = provider_config.get('options')
-    if options:
-        set_deep[f'provider.{provider_name}.options'] = options
-
-# If share feature is deployed, add enterprise URL and share mode.
-# The enterprise.url points at the local proxy (localhost:18080) which
-# injects JWT auth headers before forwarding to the share backend.
-share_domain = '$SHARE_DOMAIN'
-if share_domain and share_domain != 'None':
-    set_deep['enterprise'] = {'url': 'http://localhost:18080'}
-    set_deep['share'] = 'manual'
-
-# Build the config patch
-patch = {
-    'config_version': int('$CONFIG_VERSION'),
-    'patches': {
-        'config.json': {
-            'set': {}
-        },
-        'opencode.json': {
-            'set_deep': set_deep
-        }
-    }
-}
-
-# Add config.json patches for version_check_url and connection params
-config_set = patch['patches']['config.json']['set']
-if '$CLI_CLIENT_ID' and '$CLI_CLIENT_ID' != 'None':
-    config_set['client_id'] = '$CLI_CLIENT_ID'
-if '$API_DOMAIN' and '$API_DOMAIN' != 'None':
-    config_set['api_endpoint'] = 'https://$API_DOMAIN/v1'
-if '$OIDC_ISSUER' and '$OIDC_ISSUER' != 'None':
-    config_set['issuer'] = '$OIDC_ISSUER'
-if '$WEB_DOMAIN' and '$WEB_DOMAIN' != 'None':
-    config_set['version_check_url'] = 'https://$WEB_DOMAIN/version.json'
-if share_domain and share_domain != 'None':
-    config_set['share_endpoint'] = share_domain
-
-print(json.dumps(patch, indent=2))
-")
+# Build config-patch.json from opencode.json (models, provider npm/options,
+# share settings, and config.json connection params). Logic and tests live in
+# scripts/build_config_patch.py / scripts/test_build_config_patch.py.
+CONFIG_PATCH_JSON=$(python3 "$SCRIPT_DIR/build_config_patch.py" \
+    --opencode-json "$ASSETS_DIR/opencode.json" \
+    --config-version "$CONFIG_VERSION" \
+    --share-domain "$SHARE_DOMAIN" \
+    --cli-client-id "$CLI_CLIENT_ID" \
+    --api-domain "$API_DOMAIN" \
+    --oidc-issuer "$OIDC_ISSUER" \
+    --web-domain "$WEB_DOMAIN")
 
 echo "$CONFIG_PATCH_JSON" | aws s3 cp - "s3://$BUCKET/downloads/config-patch.json" \
     --profile "$PROFILE" \

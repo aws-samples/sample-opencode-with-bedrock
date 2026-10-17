@@ -8,6 +8,7 @@
   "provider": {
     "bedrock": {
       "name": "Bedrock Models",
+      "npm": "@ai-sdk/openai-compatible",
       "options": {
         "baseURL": "http://localhost:18080/v1"
       },

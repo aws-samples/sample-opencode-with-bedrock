@@ -487,6 +487,7 @@ This is the standard opencode configuration file. The critical setting is `baseU
   "provider": {
     "bedrock": {
       "name": "Bedrock Models",
+      "npm": "@ai-sdk/openai-compatible",
       "options": {
         "baseURL": "http://localhost:18080/v1"
       },
@@ -501,6 +502,8 @@ This is the standard opencode configuration file. The critical setting is `baseU
 ```
 
 `baseURL: "http://localhost:18080/v1"` is what routes all opencode API traffic through the local proxy. Without this, opencode would try to reach the remote API directly and fail with a 403 (no auth headers).
+
+`npm: "@ai-sdk/openai-compatible"` selects the runtime package that speaks the OpenAI Chat Completions protocol to the proxy. OpenCode 1.x used this package implicitly for custom providers, but **OpenCode 2.x has no fallback** — without the field the provider has an empty package and every request fails (see [OpenCode 2.x: "API key" prompt](#opencode-2x-api-key-prompt--unsupported-package)). No API key is needed: the proxy injects authentication on every request.
 
 ### `~/bin/oc` Wrapper Script
 
@@ -578,6 +581,30 @@ curl -s http://localhost:18080/api/token/status | python3 -m json.tool
 | 403 from ALB | JWT expired and proxy failed to refresh | Check `curl localhost:18080/health` for refresher errors |
 | 426 Upgrade Required | Client version below server minimum | `opencode-auth update && oc` |
 | macOS "cannot be opened" | Gatekeeper blocking unsigned binary | `sudo xattr -rd com.apple.quarantine ~/bin/opencode-auth && codesign -s - -f ~/bin/opencode-auth` |
+| OpenCode 2.x asks for an API key / `Unsupported package for bedrock/...` | `provider.bedrock.npm` missing from `~/.opencode/opencode.json` | See below |
+
+### OpenCode 2.x: "API key" prompt / unsupported package
+
+**Symptom:** after upgrading the `opencode` CLI to 2.x, the TUI prompts to connect an integration or enter an API key for "Bedrock Models", and prompts fail. `opencode run -m bedrock/<model> ...` prints:
+
+```
+Error: Unsupported package for bedrock/<model>:
+```
+
+**Cause:** OpenCode 2.x reads the v1 `provider` config but no longer defaults custom providers to `@ai-sdk/openai-compatible`. Installs created before the fix have no `npm` field, so the `bedrock` provider has an empty runtime package. The 2.x UI then treats "Bedrock Models" as an unconnected integration with only a manual API key method. Entering a key does not help; the proxy handles auth.
+
+**Fix:** the distributed `opencode.json` and config patch now include `"npm": "@ai-sdk/openai-compatible"`, so versioned clients pick it up automatically on the next `oc` launch. To fix an install by hand, add the field under `provider.bedrock` in `~/.opencode/opencode.json`:
+
+```json
+"bedrock": {
+  "name": "Bedrock Models",
+  "npm": "@ai-sdk/openai-compatible",
+  "options": { "baseURL": "http://localhost:18080/v1" },
+  ...
+}
+```
+
+The field is harmless on OpenCode 1.x. OpenCode 2.x may still show a "Connect an integration" hint because no integration is connected (auth is handled by the proxy); it can be dismissed. 2.x also logs warnings that the `attachment`, `reasoning`, and `temperature` model fields are ignored, which is expected.
 
 ### Enable debug logging
 

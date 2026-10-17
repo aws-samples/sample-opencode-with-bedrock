@@ -80,6 +80,8 @@ This:
 - Auto-increments `config_version` in `config-patch.json` and `version.json`
 - Uploads everything to S3
 
+The config patch is built by `scripts/build_config_patch.py` (tests: `python3 -m unittest discover -s scripts -p 'test_*.py'`). For each provider it emits `set_deep` entries for every model, the provider `options`, and the provider `npm` package. Provider fields outside those are **not** propagated to existing installs. If you add another provider-level field users need, extend the builder and its tests.
+
 **Important:** Always pass `--version` to avoid publishing `dev` binaries that break the config-patch system.
 
 To find the current version:
@@ -140,6 +142,10 @@ opencode-auth update --config-only
 OpenCode has a **built-in** "Amazon Bedrock Models" provider that calls Bedrock directly using AWS credentials. This does not work with our stack because our ALB requires JWT authentication.
 
 Users should only select models under **"Bedrock Models"** (the custom provider configured in `opencode.json`), which routes through the local proxy with proper auth headers.
+
+### OpenCode 2.x asks for a Bedrock API key
+
+OpenCode 2.x requires the custom provider to declare its runtime package. Keep `"npm": "@ai-sdk/openai-compatible"` on `provider.bedrock` in `services/distribution/assets/opencode.json`; removing it breaks every 2.x client with `Unsupported package for bedrock/<model>`. See [Local Proxy troubleshooting](./LOCAL-PROXY.md#opencode-2x-api-key-prompt--unsupported-package).
 
 ### Go proxy blocked on corporate network
 
